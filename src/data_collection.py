@@ -5,9 +5,9 @@ from multiprocessing import Pool, cpu_count
 import os
 from tqdm import tqdm
 
-NUM_CORES = cpu_count() - 4 # Uses all available cores (Server/Colab friendly)
-SAVE_PATH = "../dataset/raw_actuator_sysid_dataset.npz"
-NUM_EPISODES = 500
+NUM_CORES = cpu_count() # Uses all available cores
+SAVE_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"
+NUM_EPISODES = 50_000
 # Absolute minimum and maximum
 MINMAX_PARAMS = {
     "damping": [0.5, 5.0],
@@ -38,6 +38,7 @@ def collect_one_episode(episode_idx):
     ]
     
     obs, info = env.reset(seed=episode_idx, options={"parameters": params})
+    policy.reset()  # Reset the policy to choose a new signal type for this episode
     
     trajectory_obs = np.zeros((env.max_episode_steps, env.observation_space.shape[0]))
     trajectory_acts = np.zeros((env.max_episode_steps, env.action_space.shape[0]))

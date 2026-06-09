@@ -17,7 +17,7 @@ class SinglePendulumEnv(gymnasium.Env):
         self.render_mode = render_mode
 
         # MuJoCo Setup
-        self.model = mujoco.MjModel.from_xml_path("../assets/scene.xml")
+        self.model = mujoco.MjModel.from_xml_path("./assets/scene.xml")
         self.data = mujoco.MjData(self.model)
         self.viewer = None
         self.renderer = None

@@ -48,7 +48,7 @@ class WarmUpActionPolicy:
             for act_idx in range(self.action_dims):
                 if np.random.uniform() < 0.25:
                     frequencies = [(0, 10), (0, -10), (-10, 0), (10, 0)]
-                    chosen_frequency_pair = np.random.choice(frequencies)
+                    chosen_frequency_pair = frequencies[np.random.choice(len(frequencies))]
                     f1, f2 = chosen_frequency_pair
                 else:
                     f1 = np.random.uniform() * self.max_freq
