@@ -141,10 +141,6 @@ class CNNLSTMEncoderModel(nn.Module):
         # TODO: Unsure if I should keep the layer norm here
         self.ln_lstm = nn.LayerNorm(lstm_dims * 2)
         
-        # Latent space of size lstm_dims
-        self.fc = nn.Linear(lstm_dims * 2, lstm_dims)
-        self.ln_fc = nn.LayerNorm(lstm_dims)
-        
     def forward(self, mask, states, actions):
         # REMOVE 'with torch.no_grad():' so the mask token receives gradients!
         masked_states = torch.where(mask, self.mask_state_token, states)
@@ -166,11 +162,15 @@ class CNNLSTMEncoderModel(nn.Module):
         
         output_lstm, (h_n, c_n) = self.lstm(y)
         
-        last_layer_forward_h = h_n[-2, :, :]  # Shape: (batch_size, lstm_dim)
-        last_layer_backward_h = h_n[-1, :, :]  # Shape: (batch_size, lstm_dim)
-        y = torch.cat((last_layer_forward_h, last_layer_backward_h), dim=1)
-        y = self.ln_lstm(F.mish(y))
-        latent = self.ln_fc(F.mish(self.fc(y)))
+        # Global Average Pooling (Mean)
+        mean_latent = output_lstm.mean(dim=1) # Shape: (batch, 2 * lstm_dims)
+        
+        # Global Max Pooling (Max)
+        # Note: we unpack the tuple to only get the max values, discarding indices
+        max_latent, _ = output_lstm.max(dim=1) # Shape: (batch, 2 * lstm_dims)
+        
+        # Concatenate along the feature dimension
+        latent = torch.cat([mean_latent, max_latent], dim=1) # Shape: (batch, 4 * lstm_dims)
         
         return latent, output_lstm
     
@@ -190,7 +190,7 @@ class CNNLSTMDecoderModel(nn.Module):
         self.ln_lstm = nn.LayerNorm(cnn2_dims)
         
         # Instead of pool, add an upsample layer to restore the sequence length
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest') 
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
         
         # Concatenating the outputs of the 3 CNNs so cnn1_dims * 3
         self.cnn2 = nn.Conv1d(

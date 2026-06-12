@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class BaseModel(nn.Module):
@@ -128,12 +129,15 @@ class BaseEncoderDecoder(nn.Module):
 
 
 class LinearHead(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, lstm_dims, out_dim):
         super(LinearHead, self).__init__()
-        self.mu_head = nn.Linear(in_dim, out_dim)
-        self.sigma_head = nn.Linear(in_dim, out_dim)
+        self.fc = nn.Linear(lstm_dims * 4, lstm_dims * 2)
+        self.ln_fc = nn.LayerNorm(lstm_dims * 2)
+        self.mu_head = nn.Linear(lstm_dims * 2, out_dim)
+        self.sigma_head = nn.Linear(lstm_dims * 2, out_dim)
 
     def forward(self, x):
+        x = self.ln_fc(F.mish(self.fc(x)))
         mu = torch.tanh(self.mu_head(x)) * 1.2  # Scale the tanh to allow for OOD predictions
         sigma = torch.exp(self.sigma_head(x)) + 1e-6  # epsilon added to help with the stability when the sigma is near 0
         # sigma = standard deviation

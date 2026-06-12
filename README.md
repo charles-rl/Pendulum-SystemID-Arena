@@ -10,3 +10,6 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
 
 You may use requirements-server.txt but it is better to just let it build everything
+
+
+start with data_collection.py then data_view.py then data_preprocess.py

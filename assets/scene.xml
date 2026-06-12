@@ -1,20 +1,26 @@
 <mujoco model="single link pendulum">
-	<compiler inertiafromgeom="true"/>
+	<compiler inertiafromgeom="true" angle="radian"/>
 	<default>
-		<joint armature="0" damping="1" limited="false"/>
 		<geom contype="0" friction="1 0.1 0.1" rgba="0.7 0.7 0 1"/>
-		<tendon/>
-		<motor ctrlrange="-3 3"/>
+		<default class="STS3215">
+			<joint damping="0.60" frictionloss="0.052" armature="0.028"/>
+			<position kp="998.22" kv="2.731" forcerange="-2.94 2.94"/>
+		</default>
+		<default class="backlash">
+			<!-- +/- 0.5° of backlash -->
+			<joint damping="0.01" frictionloss="0" armature="0.01" limited="true" range="-0.015184364492350668 0.015184364492350668"/>
+		</default>
 	</default>
 	<option gravity="0 0 -9.80665" integrator="RK4" timestep="0.001"/>
-	<size nstack="3000"/>
+
 	<worldbody>
         <body name="pole" pos="0 0 0">
-            <joint axis="0 1 0" name="hinge" pos="0 0 0" limited="false" frictionloss="0" type="hinge"/>
+            <joint class="STS3215" axis="0 1 0" name="hinge" pos="0 0 0" limited="false" type="hinge"/>
             <geom fromto="0 0 0 0.001 0 0.6" name="cpole" rgba="0 0.7 0.7 1" size="0.049 0.3" density="1000" type="capsule"/>
         </body>
 	</worldbody>
+
 	<actuator>
-		<motor ctrlrange="-3 3" gear="20" joint="hinge" name="hinge"/>
+		<position class="STS3215" joint="hinge" forcerange="-3.35 3.35" ctrlrange="-3.14159 3.14159"/>
 	</actuator>
 </mujoco>
