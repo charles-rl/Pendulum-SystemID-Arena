@@ -8,3 +8,4 @@ wandb/
 models/
 dataset/
 MUJOCO_LOG.txt
+runs/

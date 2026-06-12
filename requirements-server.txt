@@ -44,6 +44,7 @@ nvidia-nvjitlink-cu12==12.8.93
 nvidia-nvshmem-cu12==3.4.5
 nvidia-nvtx-cu12==12.8.90
 packaging==26.2
+pandas==3.0.3
 pillow==12.2.0
 platformdirs==4.10.0
 protobuf==6.33.6
@@ -54,6 +55,7 @@ pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 PyYAML==6.0.3
 requests==2.34.2
+sb3_contrib==2.8.0
 SciencePlots==2.2.1
 scikit-learn==1.8.0
 scipy==1.17.1
@@ -61,6 +63,7 @@ sentry-sdk==2.62.0
 setuptools==70.2.0
 six==1.17.0
 smmap==5.0.3
+stable_baselines3==2.8.0
 sympy==1.14.0
 threadpoolctl==3.6.0
 torch==2.11.0+cu128

@@ -1,0 +1,56 @@
+save_path: "models/rl_dr"
+
+eval:
+  load_path: "models/rl_dr/best_model.zip"
+  render_mode: "human"  # "human" or "rgb_array"
+  episodes: 3
+  output_dir: "videos/"
+
+nominal_params:
+  kp: 998.22
+  kv: 2.731
+  max_torque: 2.94
+  frictionloss: 0.052
+  damping: 0.6
+  armature: 0.028
+  backlash_max_deg: 0.87
+  backlash_armature: 0.01
+  backlash_damping: 0.01
+
+dr_bounds:
+  # kp: [800.0, 1200.0]
+  # kv: [2.0, 4.0]
+  # max_torque: [2.6, 3.5]
+  # frictionloss: [0.02, 0.12]
+  # damping: [0.4, 0.9]
+  # armature: [0.02, 0.04]
+  # backlash_max_deg: [0.87, 1.0]
+  # backlash_armature: [0.005, 0.02]
+  # backlash_damping: [0.001, 0.03]
+
+  kp: [996, 1000]
+  kv: [2.7, 2.8]
+  max_torque: [2.93, 2.95]
+  frictionloss: [0.042, 0.062]
+  damping: [0.5, 0.7]
+  armature: [0.027, 0.029]
+  backlash_max_deg: [0.87, 0.88]
+  backlash_armature: [0.01, 0.02]
+  backlash_damping: [0.01, 0.02]
+
+
+rl_hyperparameters:
+  num_envs: 4
+  algorithm: "TQC"
+  policy_type: "MlpPolicy"
+  total_timesteps: 1000000
+  learning_rate: 0.0003
+  buffer_size: 1000000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  train_freq: 1
+
+wandb:
+  project: "Pendulum SystemID Arena"
+  run_name: "TQC_DomainRandomization_Phase1"

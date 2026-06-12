@@ -108,11 +108,18 @@ class SinglePendulumEnv(gymnasium.Env):
             "backlash_damping": self.model.dof_damping[self.backlash_dof_adr]
         }
         
-        info = {"qpos": pole_angle, "qvel": pole_velocity, "parameters": current_parameters}
+        info = {"pole_angle": pole_angle, "pole_velocity": pole_velocity, "parameters": current_parameters}
+        # Scale angle to be between -1 and 1
+        scaled_pole_angle = (pole_angle + np.pi) / (2 * np.pi) * 2 - 1
+        # Scale velocity according to 45 RPM max speed of the motor (converted to rad/s)
+        max_velocity = (45 / 60) * 2 * np.pi # Convert 45 RPM to rad/s
+        scaled_pole_velocity = pole_velocity / max_velocity
+        # Scale target angle as well
+        scaled_target_angle = (self.target_angle + np.pi) / (2 * np.pi) * 2 - 1
         if self.track_targets:
-            obs = np.array([pole_angle, pole_velocity, self.target_angle], dtype=np.float64)
+            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_target_angle], dtype=np.float64)
         else:
-            obs = np.array([pole_angle, pole_velocity], dtype=np.float64)
+            obs = np.array([scaled_pole_angle, scaled_pole_velocity], dtype=np.float64)
         
         return obs, info
     
@@ -133,8 +140,8 @@ class SinglePendulumEnv(gymnasium.Env):
         obs, info = self._get_obs_info()
         
         # --- DR-SENSITIVE REWARD CALCULATION ---
-        pole_angle = obs[0]
-        pole_velocity = obs[1]
+        pole_angle = info["pole_angle"]
+        pole_velocity = info["pole_velocity"]
         
         # 1. Normalized Position Error (handles angle wrapping bugs gracefully)
         angle_error = self.target_angle - pole_angle

@@ -1,4 +1,4 @@
-from environment import SinglePendulumEnv
+from envs.pendulum import SinglePendulumEnv
 from sysid.randompolicy import WarmUpActionPolicy
 import numpy as np
 from multiprocessing import Pool, cpu_count
