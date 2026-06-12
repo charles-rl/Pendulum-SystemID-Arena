@@ -36,16 +36,27 @@ def main():
     print(f"Loading trained model from: {config['eval']['load_path']}...")
     model = TQC.load(config['eval']['load_path'], env=env)
 
+    total_episode_reward = 0
     # 5. Run evaluation loop
     for episode in range(config['eval']['episodes']):
         simulation_delay_speed = 2.0  # default is 1.0
-        options = None
+        test_params = {
+            "kp": 998.22,
+            "kv": 2.731,
+            "max_torque": 2.94,          # Set nominal (2.94) or peak voltage performance (3.35)
+            "frictionloss": 0.052,
+            "damping": 0.6,
+            "armature": 0.028,
+            "backlash_max_deg": 0.87,
+            "backlash_armature": 0.01,
+            "backlash_damping": 0.01,
+        }
+        options = {"params": test_params}
         obs, info = env.reset(options=options)
         done = False
         truncated = False
         episode_reward = 0
         steps = 0
-        env.render()
         if episode == 0:
             time.sleep(2)  # Pause briefly to see the initial state before starting the episode
         
@@ -57,19 +68,22 @@ def main():
             
             # Step the physics
             obs, reward, done, truncated, info = env.step(action)
+            env.render()
             episode_reward += reward
             steps += 1
             
-            time_until_next_step = env.model.opt.timestep * env.FRAMESKIP - (time.time() - step_start)
+            time_until_next_step = env.model.opt.timestep * env.FRAME_SKIP - (time.time() - step_start)
             if time_until_next_step > 0:
                 time.sleep(time_until_next_step * simulation_delay_speed)  # Adjust the speed of the simulation
 
         print(f"Episode {episode + 1} Finished | Steps: {steps} | Total Reward: {episode_reward:.2f}")
-
+        total_episode_reward += episode_reward
+    total_episode_reward /= config['eval']['episodes']  # Average reward per episode
     # 6. Clean up and close
     print("\nClosing environment and saving files...")
     env.close()
     print("Done!")
+    print(f"Total Episode Reward: {total_episode_reward:.2f}")
 
 if __name__ == "__main__":
     main()

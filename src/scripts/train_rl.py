@@ -12,37 +12,55 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.env_util import make_vec_env
 import yaml
+from src.utils import generate_deterministic_dr_params
 
     
 class DomainRandomizationWrapper(gym.Wrapper):
-    def __init__(self, env, dr_bounds):
+    def __init__(self, env, seed, power_of_two_samples, dr_bounds):
         super().__init__(env)
         self.dr_bounds = dr_bounds
+        self.keys = list(dr_bounds.keys())
+        
+        # FIX A: Correctly parse the low and high values out of your YAML pairs
+        lower_bounds = [bounds[0] for bounds in dr_bounds.values()]
+        upper_bounds = [bounds[1] for bounds in dr_bounds.values()]
+        
+        self.dr_matrix = generate_deterministic_dr_params(
+            dr_lower_bound=lower_bounds,
+            dr_upper_bound=upper_bounds,
+            power_of_two_samples=power_of_two_samples,
+            seed=seed
+        )
+        self.num_samples = len(self.dr_matrix)
+        self.sample_idx = 0
+        self.initialized_offset = False
 
     def reset(self, seed=None, options=None):
-        # When SB3 calls reset internally, options will be None.
-        # We intercept it here and inject our randomized parameters!
+        # TRAP FIX: SB3 gives each parallel worker a unique seed on the first reset loop.
+        # We catch that worker seed here to offset our matrix entry point.
+        # This prevents all 4 parallel environments from running identical parameters simultaneously!
+        if not self.initialized_offset and seed is not None:
+            self.sample_idx = seed % self.num_samples
+            self.initialized_offset = True
+
         if options is None:
-            randomized_params = {
-                "kp": float(np.random.uniform(*self.dr_bounds["kp"])),
-                "kv": float(np.random.uniform(*self.dr_bounds["kv"])),
-                "max_torque": float(np.random.uniform(*self.dr_bounds["max_torque"])),
-                "frictionloss": float(np.random.uniform(*self.dr_bounds["frictionloss"])),
-                "damping": float(np.random.uniform(*self.dr_bounds["damping"])),
-                "armature": float(np.random.uniform(*self.dr_bounds["armature"])),
-                "backlash_max_deg": float(np.random.uniform(*self.dr_bounds["backlash_max_deg"])),
-                "backlash_armature": float(np.random.uniform(*self.dr_bounds["backlash_armature"])),
-                "backlash_damping": float(np.random.uniform(*self.dr_bounds["backlash_damping"]))
-            }
+            # FIX B: Pull the pre-calculated row out of your Sobol matrix
+            current_sample = self.dr_matrix[self.sample_idx]
+            
+            # Map the flat row array back to your parameter keys dictionary structure
+            randomized_params = {self.keys[i]: float(current_sample[i]) for i in range(len(self.keys))}
             options = {"params": randomized_params}
+            
+            # Cycle sequentially to the next row vector for the next reset call
+            self.sample_idx = (self.sample_idx + 1) % self.num_samples
             
         return self.env.reset(seed=seed, options=options)
 
-set_random_seed(42)
 
 def main():
     with open("./src/configs/rl_config.yaml", "r") as f:
         config = yaml.safe_load(f)
+    set_random_seed(config["seed"])
     dr_bounds = config["dr_bounds"]
     config_rl = config["rl_hyperparameters"]
     
@@ -55,14 +73,19 @@ def main():
     
     # 1. Initialize Parallel Environments
     num_envs = config_rl["num_envs"]
+    wrapper_kwargs = {
+        "seed": config["seed"], 
+        "power_of_two_samples": config["train"]["sobol_power_of_two_samples"], 
+        "dr_bounds": dr_bounds
+    }
     env = make_vec_env(
         SinglePendulumEnv, 
         n_envs=num_envs, 
-        seed=0, 
+        seed=config["seed"], 
         vec_env_cls=SubprocVecEnv,
         env_kwargs={"render_mode": "rgb_array"},
         wrapper_class=DomainRandomizationWrapper,  # <-- Injects wrapper logic
-        wrapper_kwargs={"dr_bounds": dr_bounds}    # <-- Passes config parameters
+        wrapper_kwargs=wrapper_kwargs
     )
     env = VecMonitor(env)
 
@@ -72,7 +95,7 @@ def main():
         n_envs=1, 
         env_kwargs={"render_mode": "rgb_array"},
         wrapper_class=DomainRandomizationWrapper,
-        wrapper_kwargs={"dr_bounds": dr_bounds}
+        wrapper_kwargs=wrapper_kwargs
     )
     eval_env = VecMonitor(eval_env)
 
@@ -99,12 +122,10 @@ def main():
         tensorboard_log=f"runs/{run.id}",
         verbose=1,
     )
-    # model = TQC.load("models/3g0olyca/best_model/best_model.zip", env=env)
-
     # 6. Set up the W&B Callback
     # This automatically tracks rewards, episode length, and actor/critic losses, 
     # and saves the best model weights during the training process.
-    save_path = config["save_path"]
+    save_path = config["train"]["save_path"]
     os.makedirs(f"{save_path}/{run.id}", exist_ok=True)
     wandb_callback = WandbCallback(
         model_save_path=f"{save_path}/{run.id}",
@@ -114,9 +135,10 @@ def main():
     # ADD: EvalCallback to monitor and save the absolute best model
     eval_callback = EvalCallback(
         eval_env,
-        best_model_save_path=f"models/{run.id}/best_model",
-        log_path=f"models/{run.id}/logs",
-        eval_freq=10_000,  # Adjust eval frequency based on number of envs
+        best_model_save_path=f"{save_path}/{run.id}/best_model",
+        log_path=f"{save_path}/{run.id}/logs",
+        eval_freq=config["train"]["eval_freq"],  # Adjust eval frequency based on number of envs
+        n_eval_episodes=config["train"]["eval_episodes"],
         deterministic=True,    # Test the policy without exploration noise
         render=False
     )

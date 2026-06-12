@@ -1,4 +1,15 @@
-save_path: "models/rl_dr"
+seed: 42
+
+train:
+  save_path: "models/rl_dr"
+  eval_freq: 1000
+  eval_episodes: 10
+  # Number of samples for Sobol sequence (must be a power of 2). 
+  # This determines how many unique parameter sets will be generated for domain randomization during training.
+  # The formula is to find how many episodes there are which is total_timesteps / max_episode_length
+  # In this case 500,000 / 200 = 2500 episodes
+  # We pick a power of two that is a bit lower than that number so that the RL agent has some repetition at least
+  sobol_power_of_two_samples: 10  # 2^8 = 256, 2^9 = 512, 2^10 = 1024
 
 eval:
   load_path: "models/rl_dr/best_model.zip"
@@ -18,32 +29,32 @@ nominal_params:
   backlash_damping: 0.01
 
 dr_bounds:
-  # kp: [800.0, 1200.0]
-  # kv: [2.0, 4.0]
-  # max_torque: [2.6, 3.5]
-  # frictionloss: [0.02, 0.12]
-  # damping: [0.4, 0.9]
-  # armature: [0.02, 0.04]
-  # backlash_max_deg: [0.87, 1.0]
-  # backlash_armature: [0.005, 0.02]
-  # backlash_damping: [0.001, 0.03]
+  kp: [800.0, 1200.0]
+  kv: [2.0, 4.0]
+  max_torque: [2.6, 3.5]
+  frictionloss: [0.02, 0.12]
+  damping: [0.4, 0.9]
+  armature: [0.02, 0.04]
+  backlash_max_deg: [0.87, 1.0]
+  backlash_armature: [0.005, 0.02]
+  backlash_damping: [0.001, 0.03]
 
-  kp: [996, 1000]
-  kv: [2.7, 2.8]
-  max_torque: [2.93, 2.95]
-  frictionloss: [0.042, 0.062]
-  damping: [0.5, 0.7]
-  armature: [0.027, 0.029]
-  backlash_max_deg: [0.87, 0.88]
-  backlash_armature: [0.01, 0.02]
-  backlash_damping: [0.01, 0.02]
+  # kp: [996, 1000]
+  # kv: [2.7, 2.8]
+  # max_torque: [2.93, 2.95]
+  # frictionloss: [0.042, 0.062]
+  # damping: [0.5, 0.7]
+  # armature: [0.027, 0.029]
+  # backlash_max_deg: [0.87, 0.88]
+  # backlash_armature: [0.01, 0.02]
+  # backlash_damping: [0.01, 0.02]
 
 
 rl_hyperparameters:
   num_envs: 4
   algorithm: "TQC"
   policy_type: "MlpPolicy"
-  total_timesteps: 1000000
+  total_timesteps: 500000
   learning_rate: 0.0003
   buffer_size: 1000000
   batch_size: 256
