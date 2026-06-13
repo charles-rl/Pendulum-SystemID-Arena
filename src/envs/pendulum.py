@@ -7,6 +7,8 @@ import numpy as np
 class SinglePendulumEnv(gymnasium.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
     FRAME_SKIP = 10
+    # We initialize it here so that no need to create a dummy env, we skip __init__
+    MAX_EPISODE_STEPS = 300  # 3 seconds
     
     def __init__(self, render_mode=None, track_targets=True, print_info=False):
         self.render_mode = render_mode
@@ -36,7 +38,6 @@ class SinglePendulumEnv(gymnasium.Env):
         self.viewer = None
         self.renderer = None
         self.timesteps = 0
-        self.max_episode_steps = 500  # 5 seconds
         
         # Environment
         # Scale to actual positions which in this case is -pi, pi
@@ -58,19 +59,23 @@ class SinglePendulumEnv(gymnasium.Env):
         # If options are provided then update parameters otherwise use default
         if options is not None:
             p = options["params"]
+            # TODO: Need a way to return to default if system parameter was passed
             self.model.actuator_gainprm[self.actuator_id, 0] = p["kp"]
             self.model.actuator_biasprm[self.actuator_id, 1] = -p["kp"]
             self.model.actuator_biasprm[self.actuator_id, 2] = -p["kv"]
             self.model.actuator_forcerange[self.actuator_id] = [-p["max_torque"], p["max_torque"]]
             
             self.model.dof_frictionloss[self.jnt_dof_adr] = p["frictionloss"]
-            self.model.dof_damping[self.jnt_dof_adr] = p["damping"]
+            if p.get("damping", None) is not None:
+                self.model.dof_damping[self.jnt_dof_adr] = p["damping"]
             self.model.dof_armature[self.jnt_dof_adr] = p["armature"]
             
             backlash_max_rad = np.deg2rad(p["backlash_max_deg"])
             self.model.jnt_range[self.backlash_id] = [-backlash_max_rad, backlash_max_rad]
-            self.model.dof_armature[self.backlash_dof_adr] = p["backlash_armature"]
-            self.model.dof_damping[self.backlash_dof_adr] = p["backlash_damping"]
+            if p.get("backlash_damping", None) is not None:
+                self.model.dof_damping[self.backlash_dof_adr] = p["backlash_damping"]
+            if p.get("backlash_armature", None) is not None:
+                self.model.dof_armature[self.backlash_dof_adr] = p["backlash_armature"]
 
         # Reset Physics
         mujoco.mj_resetData(self.model, self.data)
@@ -131,11 +136,11 @@ class SinglePendulumEnv(gymnasium.Env):
         
         self.timesteps += 1
         
-        if self.track_targets and self.timesteps == (self.max_episode_steps // 2):
+        if self.track_targets and self.timesteps == (self.MAX_EPISODE_STEPS // 2):
             # Set target angle
             self.target_angle = np.random.uniform(-np.pi, np.pi)
         
-        truncated = bool(self.timesteps >= self.max_episode_steps)
+        truncated = bool(self.timesteps >= self.MAX_EPISODE_STEPS)
         terminated = False
         obs, info = self._get_obs_info()
         

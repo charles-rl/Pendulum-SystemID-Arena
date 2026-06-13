@@ -1,11 +1,13 @@
 import argparse
 import os
-
+import yaml
 import matplotlib.pyplot as plt
 import numpy as np
 
+with open("./src/configs/sysid_config.yaml", "r") as f:
+        config = yaml.safe_load(f)
 
-DEFAULT_DATA_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"
+DEFAULT_DATA_PATH = config["dataset"]["raw_path"]
 
 
 def load_dataset(path: str):

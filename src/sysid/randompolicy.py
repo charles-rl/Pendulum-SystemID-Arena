@@ -3,13 +3,15 @@ import numpy as np
 class WarmUpActionPolicy:
     """_summary_
     Just produce random actions for the environment for system identification. It has multiple functions.
-    1. 22% White Noise - Just pure random actions
-    2. 22% Pseudo-Random Binary Sequence (PRBS) - PRBS is a classic SysID signal that randomly jumps between a maximum and minimum value (e.g., -1 and 1) at discrete time intervals.
-    3. 22% Chirp Signal - A chirp is a sine wave that continuously increases (or decreases) in frequency over time.
-    4. 22% Multisine (Sum of Sines) - A combination of multiple sine waves at different frequencies and different phases
-    5. 12% Impulses - Short bursts of maximum amplitude followed by periods of no input
-    Mix all of these together to get a rich excitation signal that covers a wide range of frequencies and amplitudes, which is ideal for system identification.
+    1. White Noise - Just pure random actions
+    2. Pseudo-Random Binary Sequence (PRBS) - PRBS is a classic SysID signal that randomly jumps between a maximum and minimum value (e.g., -1 and 1) at discrete time intervals.
+    3. Chirp Signal - A chirp is a sine wave that continuously increases (or decreases) in frequency over time.
+    4. Multisine (Sum of Sines) - A combination of multiple sine waves at different frequencies and different phases
+    5. Impulses - Short bursts of maximum amplitude followed by periods of no input
+    I do 1 for each unique set of system parameters
     """
+    SIGNAL_TYPES = ["noise", "prbs", "multisine", "impulse", "chirp_normal", "chirp_shifted"]
+    NUM_SIGNAL_TYPES = len(SIGNAL_TYPES)
     def __init__(self, action_space, total_timesteps, dt, frame_skip):
         self.chosen_signal_type = None
         self.dt = dt
@@ -26,44 +28,50 @@ class WarmUpActionPolicy:
         self.max_freq = 10.0  # According to physical bandwidth of STS3215 motor. The point where the motor's response drops off
         self.frequencies = np.linspace(self.base_freq, self.max_freq, num=8)  # 8 frequencies evenly spaced on a log scale
     
-    def reset(self):
-        signal_types = ["noise", "prbs", "chirp", "multisine", "impulse"]
-        probabilities = [0.22, 0.22, 0.22, 0.22, 0.12]
-        self.chosen_signal_type = np.random.choice(signal_types, p=probabilities)
+    def reset(self, variation_idx, seed=None):
+        if variation_idx < 0 or variation_idx >= 10:
+            raise ValueError("Invalid variation index. Choose from 0 to 9")
         
+        # Map the 10 sequential variations back to the 6 physical SIGNAL_TYPES
+        if variation_idx < 4:
+            signal_type_idx = variation_idx
+        elif variation_idx < 6:
+            signal_type_idx = 4  # chirp_normal (sampled 2 times total)
+        else:
+            signal_type_idx = 5  # chirp_shifted (sampled 4 times total)
+        self.chosen_signal_type = self.SIGNAL_TYPES[signal_type_idx]
+        
+        # Create a isolated local generator for perfect multi-process determinism
+        rng = np.random.default_rng(seed)
+
         if self.chosen_signal_type == "multisine":
-            # Precompute the multisine signal for the entire episode
             self.multisine_function = np.zeros((self.total_timesteps, self.action_dims))
             for act_idx in range(self.action_dims):
                 for freq in self.frequencies:
-                    phase = np.random.uniform(0, 2 * np.pi)  # Random phase for each sine wave
+                    phase = rng.uniform(0, 2 * np.pi)  # Switched to local rng
                     self.multisine_function[:, act_idx] += np.sin(2 * np.pi * freq * self.t + phase)
                 self.multisine_function /= len(self.frequencies)
                 
-        elif self.chosen_signal_type == "chirp":
-            # Precompute the chirp signal for the entire episode
-            # 25% the normal min max chirp
-            # 75% move the chirp around
+        elif self.chosen_signal_type in ["chirp_normal", "chirp_shifted"]:
             self.chirp_function = np.zeros((self.total_timesteps, self.action_dims))
             for act_idx in range(self.action_dims):
-                if np.random.uniform() < 0.25:
+                if self.chosen_signal_type == "chirp_normal":
                     frequencies = [(0, 10), (0, -10), (-10, 0), (10, 0)]
-                    chosen_frequency_pair = frequencies[np.random.choice(len(frequencies))]
+                    chosen_frequency_pair = frequencies[rng.choice(len(frequencies))]  # Switched to local rng
                     f1, f2 = chosen_frequency_pair
-                else:
-                    f1 = np.random.uniform() * self.max_freq
-                    # If the first frequency is positive then make the second frequency negative
+                elif self.chosen_signal_type == "chirp_shifted":
+                    f1 = rng.uniform() * self.max_freq  # Switched to local rng
                     if f1 > 0.0:
-                        f2 = np.random.uniform(-1.0, 0.0) * self.max_freq
+                        f2 = rng.uniform(-1.0, 0.0) * self.max_freq  # Switched to local rng
                     else:
-                        f2 = np.random.uniform(0.0, 1.0) * self.max_freq
+                        f2 = rng.uniform(0.0, 1.0) * self.max_freq  # Switched to local rng
                 a = (f2 - f1)/(2 * self.total_time)
                 chirp = np.sin(2 * np.pi * (f1 + a * self.t) * self.t)
                 self.chirp_function[:, act_idx] = chirp
                 
         elif self.chosen_signal_type == "prbs":
-            prbs = np.random.uniform(size=(self.total_timesteps, self.action_dims))
-            prbs = (prbs > 0.5).astype(float) * 2 - 1  # Convert to -1 and 1
+            prbs = rng.uniform(size=(self.total_timesteps, self.action_dims))  # Switched to local rng
+            prbs = (prbs > 0.5).astype(float) * 2 - 1
             self.prbs_function = prbs
                 
     def impulse_signal(self, timestep):
@@ -89,23 +97,18 @@ class WarmUpActionPolicy:
         return self.multisine_function[timestep, :]
 
     def act(self, timestep):
-        """_summary_
-
+        """
         Args:
             timestep (_type_): Takes in the environment timestep
-
-        Returns:
-            _type_: _description_
         """
         if self.chosen_signal_type == "noise":
             action = self.action_space.sample()
         elif self.chosen_signal_type == "prbs":
             action = self.prbs_signal(timestep)
-        elif self.chosen_signal_type == "chirp":
+        elif self.chosen_signal_type in ["chirp_normal", "chirp_shifted"]:
             action = self.chirp_signal(timestep)
         elif self.chosen_signal_type == "multisine":
             action = self.multisine_signal(timestep)
         elif self.chosen_signal_type == "impulse":
             action = self.impulse_signal(timestep)
         return action
-

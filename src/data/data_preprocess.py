@@ -3,7 +3,7 @@ import os
 import pickle
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
-from data.data_collection import MINMAX_PARAMS
+from src.data.collection import MINMAX_PARAMS
 
 # --- PATHS ---
 RAW_DATA_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"

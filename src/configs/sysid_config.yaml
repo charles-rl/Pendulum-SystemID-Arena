@@ -1,3 +1,10 @@
+seed: 42
+
+dataset:
+  # Formula here is 2^m * number_of_signal_types * episode_length = total_timesteps
+  # m = round(log2(desired_total_timesteps / (number_of_signal_types * episode_length)))
+  desired_total_timesteps: 20000000  # Can change when it doesn't follow power of 2
+  raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
 
 # Pruned 
 dr_absolute_bounds:
