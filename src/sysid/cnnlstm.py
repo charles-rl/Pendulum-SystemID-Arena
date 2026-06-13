@@ -4,40 +4,67 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+class CNNModel(nn.Module):
+    def __init__(self, in_channels, cnn_dims):
+        super(CNNModel, self).__init__()
+        
+        # Original dilation was 16, 8, 1
+        # Now I lowered it to compensate for a lower total timesteps
+        self.cnn_low_freq = nn.Conv1d(
+            in_channels=in_channels, out_channels=cnn_dims, kernel_size=7, dilation=8, padding="same"
+        )
+        self.cnn_mid_freq = nn.Conv1d(
+            in_channels=in_channels, out_channels=cnn_dims, kernel_size=5, dilation=4, padding="same"
+        )
+        self.cnn_high_freq = nn.Conv1d(
+            in_channels=in_channels, out_channels=cnn_dims, kernel_size=3, padding="same"
+        )
+        self.cnn_extreme_freq = nn.Conv1d(
+            in_channels=in_channels, out_channels=cnn_dims, kernel_size=2, padding="same"
+        )
+        self.bn1_low_freq = nn.BatchNorm1d(cnn_dims)
+        self.bn1_mid_freq = nn.BatchNorm1d(cnn_dims)
+        self.bn1_high_freq = nn.BatchNorm1d(cnn_dims)
+        self.bn1_extreme_freq = nn.BatchNorm1d(cnn_dims)
+        
+    def forward(self, x):
+        y_low = self.bn1_low_freq(F.mish(self.cnn_low_freq(x)))
+        y_mid = self.bn1_mid_freq(F.mish(self.cnn_mid_freq(x)))
+        y_high = self.bn1_high_freq(F.mish(self.cnn_high_freq(x)))
+        y_extreme = self.bn1_extreme_freq(F.mish(self.cnn_extreme_freq(x)))
+        
+        # We want it to be dim=1 because the shape becomes (batch_size, cnn_dims * 4, timesteps)
+        # if dim=-1 then shape becomes (batch_size, cnn_dims, timesteps * 4)
+        y = torch.cat([y_low, y_mid, y_high, y_extreme], dim=1)
+        
+        return y
+
 class CNNLSTMModel(BaseModel):
     def __init__(self, config: dict, n_params, chkpt_file_pth, device):
         super(CNNLSTMModel, self).__init__(chkpt_file_pth, device)
         
-        in_channels = config["in_channels"]
+        state_dims = config["state_dims"]
+        action_dims = config["action_dims"]
         lr = float(config["learning_rate"])
         cnn1_dims = config["cnn1_dims"]
         cnn2_dims = config["cnn2_dims"]
         lstm_dims = config["lstm_dims"]
         weight_decay = float(config["weight_decay"])
         self.clip_value = config["clip_value"]
+        self.lambda_ood = config["lambda_ood"]
         
-        self.cnn1_low_freq = nn.Conv1d(
-            in_channels=in_channels, out_channels=cnn1_dims, kernel_size=7, dilation=16, padding="same"
-        )
-        self.cnn1_mid_freq = nn.Conv1d(
-            in_channels=in_channels, out_channels=cnn1_dims, kernel_size=5, dilation=8, padding="same"
-        )
-        self.cnn1_high_freq = nn.Conv1d(
-            in_channels=in_channels, out_channels=cnn1_dims, kernel_size=3, padding="same"
-        )
-        self.bn1_low_freq = nn.BatchNorm1d(cnn1_dims)
-        self.bn1_mid_freq = nn.BatchNorm1d(cnn1_dims)
-        self.bn1_high_freq = nn.BatchNorm1d(cnn1_dims)
+        self.cnn_states = CNNModel(in_channels=state_dims, cnn_dims=cnn1_dims).to(self.device)
+        self.cnn_actions = CNNModel(in_channels=action_dims, cnn_dims=cnn1_dims).to(self.device)
         
-        # Concatenating the outputs of the 3 CNNs so cnn1_dims * 3
-        self.cnn2 = nn.Conv1d(
-            in_channels=cnn1_dims * 3, out_channels=cnn2_dims, kernel_size=3, padding="same"
+        # Concatenating the outputs of the 4 CNNs so cnn1_dims * 4
+        # And we have states and actions so we multiply by 2
+        # We use kernel_size=1 because we don't want to mix information across the time dimension yet
+        self.mixer_cnn = nn.Conv1d(
+            in_channels=cnn1_dims * 4 * 2, out_channels=cnn2_dims, kernel_size=1, padding="same"
         )
-        self.bn2 = nn.BatchNorm1d(cnn2_dims)
+        self.mixer_bn = nn.BatchNorm1d(cnn2_dims)
         
-        # Downsampling to about half the sequence length so that the LSTM sees about 300 timesteps instead of 600 timesteps
-        # Which reduces the vanishing gradient
-        self.pool = nn.AvgPool1d(kernel_size=2, stride=2)
+        # Removed average pooling layer
         
         self.lstm = nn.LSTM(
             input_size=cnn2_dims,
@@ -48,7 +75,8 @@ class CNNLSTMModel(BaseModel):
         )
         self.ln_lstm = nn.LayerNorm(lstm_dims * 2)
         
-        self.fc = nn.Linear(lstm_dims * 2, lstm_dims)
+        # Multiply by 2 because we have states and actions now
+        self.fc = nn.Linear(lstm_dims * 2 * 2, lstm_dims)
         self.ln_fc = nn.LayerNorm(lstm_dims)
         
         self.mu_fc = nn.Linear(lstm_dims, n_params)
@@ -57,31 +85,26 @@ class CNNLSTMModel(BaseModel):
         self.optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         self.to(self.device)
         
-    def forward(self, x: torch.tensor):
-        y_low = self.bn1_low_freq(F.mish(self.cnn1_low_freq(x)))
-        y_mid = self.bn1_mid_freq(F.mish(self.cnn1_mid_freq(x)))
-        y_high = self.bn1_high_freq(F.mish(self.cnn1_high_freq(x)))
+    def forward(self, states, actions):
+        states_y = self.cnn_states(states)
+        actions_y = self.cnn_actions(actions)
         
         # We want it to be dim=1 because the shape becomes (batch_size, cnn1_dims * 3, timesteps)
         # if dim=-1 then shape becomes (batch_size, cnn1_dims, timesteps * 3)
-        y = torch.cat([y_low, y_mid, y_high], dim=1)
-        y = self.bn2(F.mish(self.cnn2(y)))
-        
-        y = self.pool(y)
+        y = torch.cat([states_y, actions_y], dim=1)
+        y = self.mixer_bn(F.mish(self.mixer_cnn(y)))
         
         # swap in_channels and sequence_length
         y = y.permute(0, 2, 1)
         
         output_lstm, (h_n, c_n) = self.lstm(y)
         
-        # we only want the h_n
-        # flatten
-        last_layer_forward_h = h_n[-2, :, :]  # Shape: (batch_size, lstm_dim)
-        last_layer_backward_h = h_n[-1, :, :]  # Shape: (batch_size, lstm_dim)
-        y = torch.cat((last_layer_forward_h, last_layer_backward_h), dim=1)
-        y = self.ln_lstm(F.mish(y))
+        # We do a global mean and max pooling across all the sequence length dimension
+        mean_latent = output_lstm.mean(dim=1)
+        max_latent, _ = output_lstm.max(dim=1)
+        latent = torch.cat([mean_latent, max_latent], dim=1)
         
-        y = self.ln_fc(F.mish(self.fc(y)))
+        y = self.ln_fc(F.mish(self.fc(latent)))
         
         mu = torch.tanh(self.mu_fc(y)) * 1.2  # Scale the tanh to allow for OOD predictions
         sigma = torch.exp(self.sigma_fc(y)) + 1e-6  # epsilon added to help with the stability when the sigma is near 0

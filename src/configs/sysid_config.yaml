@@ -1,0 +1,9 @@
+
+# Pruned 
+dr_absolute_bounds:
+  kp: [10.0, 2000.0]
+  kv: [0.2, 20.0]
+  max_torque: [2.0, 5.0]
+  frictionloss: [0.001, 1.0]
+  armature: [0.001, 0.2]
+  backlash_max_deg: [0.5, 1.3]

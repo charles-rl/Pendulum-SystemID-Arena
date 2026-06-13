@@ -36,7 +36,7 @@ class SinglePendulumEnv(gymnasium.Env):
         self.viewer = None
         self.renderer = None
         self.timesteps = 0
-        self.max_episode_steps = 200  # 2 seconds
+        self.max_episode_steps = 500  # 5 seconds
         
         # Environment
         # Scale to actual positions which in this case is -pi, pi

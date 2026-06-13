@@ -8,24 +8,43 @@ class BaseModel(nn.Module):
         super(BaseModel, self).__init__()
 
         self.chkpt_file_pth = chkpt_file_pth
-        self.loss = nn.GaussianNLLLoss(full=False)
+        self.nll_loss = nn.GaussianNLLLoss(full=False)
 
         self.device = device
 
-    def forward(self, data):
+    def forward(self, states, actions):
         return NotImplementedError
     
-    def learn(self, data, target):
-        data = data.to(self.device)
-        target = target.to(self.device)
-        mu, sigma = self.forward(data)
+    def learn(self, states_id, actions_id, target_id, states_ood, actions_ood):
+        states_id = states_id.to(self.device)
+        actions_id = actions_id.to(self.device)
+        target_id = target_id.to(self.device)
+        states_ood = states_ood.to(self.device)
+        actions_ood = actions_ood.to(self.device)
+        
+        # First we use normal in-distribution data to learn the target loss
+        mu, sigma = self.forward(states_id, actions_id)
         # if sigma then square here else if var then do not square
-        loss = self.loss(mu, target, sigma.pow(2))
+        nll_loss = self.nll_loss(mu, target_id, sigma.pow(2))
+        
+        # Second we use OOD data to learn to output high uncertainty for OOD data
+        _, sigma_ood = self.forward(states_ood, actions_ood)
+        # We want to maximize the uncertainty for OOD data
+        hinge_loss = F.relu(1.0 - sigma_ood).pow(2).mean()  # Encourage sigma_ood to be greater than 1.0
+        
+        # We balance by making sure one batch is 80/20 in-distribution and OOD data
+        loss = nll_loss + self.lambda_ood * hinge_loss
+        
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.clip_value)
         self.optimizer.step()
-        return loss.item()
+        loss_metrics = {
+            "loss": loss.item(),
+            "nll_loss": nll_loss.item(),
+            "hinge_loss": hinge_loss.item()
+        }
+        return loss_metrics
 
     def save_model(self):
         print("...saving checkpoint...")
