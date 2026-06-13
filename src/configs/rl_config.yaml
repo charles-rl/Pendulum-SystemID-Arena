@@ -17,17 +17,6 @@ eval:
   episodes: 3
   output_dir: "videos/"
 
-# nominal_params:
-#   kp: 998.22
-#   kv: 2.731
-#   max_torque: 2.94
-#   frictionloss: 0.052
-#   damping: 0.6
-#   armature: 0.028
-#   backlash_max_deg: 0.87
-#   backlash_armature: 0.01
-#   backlash_damping: 0.01
-
 dr_bounds:
   kp: [800.0, 1200.0]
   kv: [2.0, 4.0]

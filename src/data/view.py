@@ -5,9 +5,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 with open("./src/configs/sysid_config.yaml", "r") as f:
-        config = yaml.safe_load(f)
+    config = yaml.safe_load(f)
 
 DEFAULT_DATA_PATH = config["dataset"]["raw_path"]
+FIGURES_PATH = config["dataset"]["figures_path"]
+os.makedirs(FIGURES_PATH, exist_ok=True)
 
 
 def load_dataset(path: str):
@@ -46,33 +48,12 @@ def sample_episode_indices(n_episodes: int, n_samples: int, rng: np.random.Gener
     return rng.choice(n_episodes, size=n, replace=False)
 
 
-def sample_transitions(
-    trajectories: np.ndarray,
-    actions: np.ndarray,
-    parameters: np.ndarray,
-    n_samples: int,
-    rng: np.random.Generator,
-):
-    n_episodes, horizon, _ = trajectories.shape
-    total_transitions = n_episodes * horizon
-    n = min(n_samples, total_transitions)
-
-    flat_ids = rng.choice(total_transitions, size=n, replace=False)
-    ep_ids = flat_ids // horizon
-    t_ids = flat_ids % horizon
-
-    obs_samples = trajectories[ep_ids, t_ids, :]
-    act_samples = actions[ep_ids, t_ids, :]
-    param_samples = parameters[ep_ids, :]
-
-    return ep_ids, t_ids, obs_samples, act_samples, param_samples
-
-
 def plot_sampled_episodes(
     trajectories: np.ndarray,
     actions: np.ndarray,
     parameters: np.ndarray,
     episode_indices: np.ndarray,
+    param_names: list,
 ):
     obs_dim = trajectories.shape[2]
     act_dim = actions.shape[2]
@@ -121,7 +102,7 @@ def plot_sampled_episodes(
             ax_mix.set_title(f"Episode {ep}: Quick Overview")
             ax_mix.legend(loc="best", fontsize=8)
 
-        prm_text = "\n".join([f"param[{k}] = {v:.4f}" for k, v in enumerate(prm)])
+        prm_text = "\n".join([f"{param_names[k]} = {v:.4f}" for k, v in enumerate(prm)])
         ax_mix.text(
             1.02,
             0.98,
@@ -135,101 +116,105 @@ def plot_sampled_episodes(
         ax_mix.grid(alpha=0.25)
 
     fig.tight_layout()
+    fig.savefig(f"{FIGURES_PATH}/sampled_episodes.png", dpi=300, bbox_inches="tight")
 
 
-def plot_transition_samples(
-    ep_ids: np.ndarray,
-    t_ids: np.ndarray,
-    obs_samples: np.ndarray,
-    act_samples: np.ndarray,
-    param_samples: np.ndarray,
+def plot_parameter_distributions(
+    parameters: np.ndarray,
+    param_names: list,
+    sysid_bounds: dict,
 ):
-    obs_dim = obs_samples.shape[1]
-    act_dim = act_samples.shape[1]
-    prm_dim = param_samples.shape[1]
+    """
+    Plots a scientific Corner Plot (Pairplot) of the system parameters.
+    - Diagonal: Marginal histograms checking the uniform density property of the Sobol sequence [3].
+    - Lower Triangle: Space-filling pairwise projections colored by sequence index to show dispersion over time [3].
+    """
+    n_params = parameters.shape[1]
+    fig, axes = plt.subplots(n_params, n_params, figsize=(2.2 * n_params, 2.2 * n_params), squeeze=False)
+    fig.suptitle("Sobol Sequence space-filling & Distribution Diagnostics", fontsize=14, y=0.98)
+    
+    # Generate sequential coloring index to visually verify the Sobol space-filling progress [3]
+    sequence_idx = np.arange(len(parameters))
 
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
-    fig.suptitle("Random Transition Samples", fontsize=14)
+    for r in range(n_params):
+        for c in range(n_params):
+            ax = axes[r, c]
+            
+            # 1. Hide Upper Triangle
+            if c > r:
+                ax.axis("off")
+                continue
+                
+            # 2. Diagonal Plots (Marginal Histograms)
+            if r == c:
+                p_data = parameters[:, r]
+                counts, bins, _ = ax.hist(p_data, bins=20, alpha=0.75, color="teal", edgecolor="white", linewidth=0.5)
+                ax.grid(alpha=0.2)
+                
+                # Calculate Coefficient of Variation (CV = std/mean) of bin counts [3]
+                # A low CV indicates highly uniform space-filling properties [3]
+                cv = np.std(counts) / (np.mean(counts) + 1e-12)
+                
+                # Check for bounds in config to draw reference limits [3]
+                p_name = param_names[r]
+                if p_name in sysid_bounds:
+                    b_min, b_max = sysid_bounds[p_name]
+                    ax.axvline(b_min, color="crimson", linestyle="--", alpha=0.7, linewidth=1, label="Min Bound")
+                    ax.axvline(b_max, color="crimson", linestyle="--", alpha=0.7, linewidth=1, label="Max Bound")
+                    ax.set_xlim(b_min - 0.05 * (b_max - b_min), b_max + 0.05 * (b_max - b_min))
+                
+                ax.set_title(f"CV: {cv:.3f}", fontsize=8, pad=2)
+                
+            # 3. Off-Diagonal Plots (Pairwise Scatter Projections)
+            else:
+                x_data = parameters[:, c]
+                y_data = parameters[:, r]
+                
+                sc = ax.scatter(
+                    x_data, 
+                    y_data, 
+                    c=sequence_idx, 
+                    cmap="plasma", 
+                    s=2.0, 
+                    alpha=0.6, 
+                    rasterized=True
+                )
+                ax.grid(alpha=0.2)
+                
+                # Set axes boundaries based on config if possible [3]
+                x_name, y_name = param_names[c], param_names[r]
+                if x_name in sysid_bounds:
+                    ax.set_xlim(sysid_bounds[x_name][0], sysid_bounds[x_name][1])
+                if y_name in sysid_bounds:
+                    ax.set_ylim(sysid_bounds[y_name][0], sysid_bounds[y_name][1])
 
-    ax1 = axes[0, 0]
-    if obs_dim >= 2 and act_dim >= 1:
-        sc = ax1.scatter(obs_samples[:, 0], obs_samples[:, 1], c=act_samples[:, 0], cmap="plasma", alpha=0.85)
-        fig.colorbar(sc, ax=ax1, fraction=0.046, pad=0.04, label="act[0]")
-        ax1.set_xlabel("obs[0]")
-        ax1.set_ylabel("obs[1]")
-        ax1.set_title("obs[0] vs obs[1] (color=act[0])")
-    else:
-        ax1.scatter(np.arange(len(obs_samples)), obs_samples[:, 0], s=12, alpha=0.85)
-        ax1.set_xlabel("sample index")
-        ax1.set_ylabel("obs[0]")
-        ax1.set_title("obs[0] sampled transitions")
-    ax1.grid(alpha=0.25)
+            # Label Cleanups (Seaborn-style matrix wrapping)
+            if r == n_params - 1:
+                ax.set_xlabel(param_names[c], fontsize=9)
+            else:
+                ax.set_xticklabels([])
+                
+            if c == 0 and r > 0:
+                ax.set_ylabel(param_names[r], fontsize=9)
+            elif c > 0 or r == 0:
+                ax.set_yticklabels([])
 
-    ax2 = axes[0, 1]
-    y_action = act_samples[:, 0] if act_dim >= 1 else np.zeros(len(act_samples))
-    c_param = param_samples[:, 0] if prm_dim >= 1 else np.zeros(len(param_samples))
-    sc = ax2.scatter(t_ids, y_action, c=c_param, cmap="viridis", alpha=0.85)
-    fig.colorbar(sc, ax=ax2, fraction=0.046, pad=0.04, label="param[0]")
-    ax2.set_xlabel("timestep")
-    ax2.set_ylabel("act[0]" if act_dim >= 1 else "action")
-    ax2.set_title("Action over sampled timesteps (color=param[0])")
-    ax2.grid(alpha=0.25)
-
-    ax3 = axes[1, 0]
-    x = obs_samples[:, 0]
-    y = y_action
-    c = param_samples[:, 1] if prm_dim >= 2 else c_param
-    sc = ax3.scatter(x, y, c=c, cmap="cividis", alpha=0.85)
-    fig.colorbar(sc, ax=ax3, fraction=0.046, pad=0.04, label="param[1]" if prm_dim >= 2 else "param[0]")
-    ax3.set_xlabel("obs[0]")
-    ax3.set_ylabel("act[0]" if act_dim >= 1 else "action")
-    ax3.set_title("obs[0] vs action (color=system parameter)")
-    ax3.grid(alpha=0.25)
-
-    ax4 = axes[1, 1]
-    if prm_dim >= 3:
-        sizes = 20 + 80 * (param_samples[:, 2] - param_samples[:, 2].min()) / (
-            (np.ptp(param_samples[:, 2]) + 1e-12)
-        )
-        ax4.scatter(param_samples[:, 0], param_samples[:, 1], s=sizes, alpha=0.75)
-        ax4.set_xlabel("param[0]")
-        ax4.set_ylabel("param[1]")
-        ax4.set_title("param[0] vs param[1] (size=param[2])")
-    elif prm_dim == 2:
-        ax4.scatter(param_samples[:, 0], param_samples[:, 1], alpha=0.75)
-        ax4.set_xlabel("param[0]")
-        ax4.set_ylabel("param[1]")
-        ax4.set_title("param[0] vs param[1]")
-    else:
-        ax4.hist(param_samples[:, 0], bins=25, alpha=0.8)
-        ax4.set_xlabel("param[0]")
-        ax4.set_ylabel("count")
-        ax4.set_title("param[0] distribution")
-    ax4.grid(alpha=0.25)
-
-    # Annotate with sampled episode IDs for traceability.
-    info = f"Unique sampled episodes: {len(np.unique(ep_ids))}\nTotal transitions shown: {len(ep_ids)}"
-    ax4.text(
-        1.02,
-        0.02,
-        info,
-        transform=ax4.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=9,
-        bbox={"boxstyle": "round", "facecolor": "white", "alpha": 0.75},
+    # Add sequence progression colorbar on the right side
+    fig.subplots_adjust(right=0.88, hspace=0.15, wspace=0.15)
+    cbar_ax = fig.add_axes([0.91, 0.15, 0.02, 0.7])
+    fig.colorbar(
+        plt.cm.ScalarMappable(cmap="plasma"), 
+        cax=cbar_ax, 
+        label="Sobol Sequence Sample Generation Progress"
     )
-
-    fig.tight_layout()
+    
+    fig.savefig(f"{FIGURES_PATH}/parameter_distributions.png", dpi=300, bbox_inches="tight")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize raw pendulum system-ID dataset")
     parser.add_argument("--data", type=str, default=DEFAULT_DATA_PATH, help="Path to raw dataset NPZ file")
     parser.add_argument("--num-episodes", type=int, default=4, help="Number of episodes to plot")
-    parser.add_argument(
-        "--num-transitions", type=int, default=2000, help="Number of random transitions to sample"
-    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible sampling")
     args = parser.parse_args()
 
@@ -241,17 +226,20 @@ def main():
     print(f"  actions shape:      {actions.shape}")
     print(f"  parameters shape:   {parameters.shape}")
 
-    ep_ids = sample_episode_indices(trajectories.shape[0], args.num_episodes, rng)
-    plot_sampled_episodes(trajectories, actions, parameters, ep_ids)
+    # Extract Parameter Names directly from config to avoid generic labels [3]
+    sysid_bounds = config.get("sysid_bounds", {})
+    param_names = list(sysid_bounds.keys())
+    
+    # Fallback to index names if config mapping doesn't match data dimension [3]
+    if len(param_names) != parameters.shape[1]:
+        param_names = [f"param_{i}" for i in range(parameters.shape[1])]
 
-    transition_pack = sample_transitions(
-        trajectories,
-        actions,
-        parameters,
-        n_samples=args.num_transitions,
-        rng=rng,
-    )
-    plot_transition_samples(*transition_pack)
+    ep_ids = sample_episode_indices(trajectories.shape[0], args.num_episodes, rng)
+    plot_sampled_episodes(trajectories, actions, parameters, ep_ids, param_names)
+
+    # Replaced transition sampling with the space-filling Corner Plot diagnostic [3]
+    plot_parameter_distributions(parameters, param_names, sysid_bounds)
+    print(f"Diagnostics plots saved to {FIGURES_PATH}/")
 
     plt.show()
 

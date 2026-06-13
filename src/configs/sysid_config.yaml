@@ -1,13 +1,67 @@
 seed: 42
 
-dataset:
-  # Formula here is 2^m * number_of_signal_types * episode_length = total_timesteps
-  # m = round(log2(desired_total_timesteps / (number_of_signal_types * episode_length)))
-  desired_total_timesteps: 20000000  # Can change when it doesn't follow power of 2
-  raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
+hyperparameters:
+  state_dims: 4
+  action_dims: 1
+  learning_rate: 0.0001
+  cnn1_dims: 64  # This means it is cnn1_dims * 4 parallel CNNS * 2 (state + action)
+  cnn2_dims: 128  # This outputs cnn2_dims * 4 features to the lstm
+  lstm_dims: 128
+  weight_decay: 0.0001
+  clip_value: 5.0
+  batch_size: 256
+  epochs: 500
+  n_params: 6
+  lambda_ood: 0.1
+  id_ratio: 0.8
+  min_steps: 20
 
-# Pruned 
-dr_absolute_bounds:
+dataset:
+  # For data collection
+  # Formula for total timesteps is 2^m * number_of_signal_types * episode_length = total_timesteps
+  # m = round(log2(desired_total_timesteps / (number_of_signal_types * episode_length)))
+
+  # Generate both, one for true OOD and the other for training
+  # For training with OOD
+  desired_total_timesteps: 50000000  # Can change when it doesn't follow power of 2
+  chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
+  # For true OOD
+  # desired_total_timesteps: 1000000  # Can change when it doesn't follow power of 2
+  # chosen_bounds: "sysid_absolute_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  # raw_path: "./dataset/raw_absolute_pendulum_sysid_dataset.npz"
+
+  # For preprocessing and viewing the dataset
+  encoder_resolution: 4096.0 # 12-bit encoder
+  figures_path: "./dataset/figures"
+  scalers_path: "./models/scalers.pkl"
+  processed_path: "./dataset/processed_pendulum_sysid_dataset.npz"
+  # If you want to skip the noise/quantization step and just use the raw data with engineered features, use this path instead:
+  # processed_path: "./dataset/processed_clean_pendulum_sysid_dataset.npz"
+
+nominal_params:
+  kp: 998.22
+  kv: 2.731
+  max_torque: 2.94
+  frictionloss: 0.052
+  damping: 0.6
+  armature: 0.028
+  backlash_max_deg: 0.87
+  backlash_armature: 0.01
+  backlash_damping: 0.01
+
+# Pruned
+# This includes OOD + ID for training
+sysid_bounds:
+  kp: [400.0, 1600.0]
+  kv: [2.5, 16.0]
+  max_torque: [2.6, 4.4]
+  frictionloss: [0.02, 0.8]
+  armature: [0.01, 0.16]
+  backlash_max_deg: [0.6, 1.1]
+
+# This is the absolute bounds and only used after training for evaluation
+sysid_absolute_bounds:
   kp: [10.0, 2000.0]
   kv: [0.2, 20.0]
   max_torque: [2.0, 5.0]

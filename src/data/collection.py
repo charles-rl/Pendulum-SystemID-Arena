@@ -12,7 +12,8 @@ NUM_CORES = cpu_count() # Uses all available cores
 def collect_one_episode(args):
     episode_idx, params_dict, params_flat = args
     # Create env inside the worker (MuJoCo objects aren't picklable)
-    env = SinglePendulumEnv(render_mode=None)
+    # Command shouldn't be part of the SysID
+    env = SinglePendulumEnv(render_mode=None, track_targets=False)
     
     policy = WarmUpActionPolicy(
         action_space=env.action_space, 
@@ -62,7 +63,7 @@ if __name__ == "__main__":
     warmup_policy_num_signal_types = WarmUpActionPolicy.NUM_SIGNAL_TYPES - 2 # exclude the 2 chirp types
     warmup_policy_num_signal_types += 6 # add the 6 variations of the chirp types (4 shifted, 2 normal)
     number_of_timesteps_per_signal_type = SinglePendulumEnv.MAX_EPISODE_STEPS * warmup_policy_num_signal_types
-    m = int(np.ceil(np.log2(config["dataset"]["desired_total_timesteps"] / number_of_timesteps_per_signal_type)))
+    m = round(np.log2(config["dataset"]["desired_total_timesteps"] / number_of_timesteps_per_signal_type))
     actual_total_timesteps = number_of_timesteps_per_signal_type * (2 ** m)
     NUM_EPISODES = actual_total_timesteps // SinglePendulumEnv.MAX_EPISODE_STEPS
     print(f"Calculated m value for Sobol sequence: {m}")
@@ -70,8 +71,10 @@ if __name__ == "__main__":
     print(f"Number of episodes to collect: {NUM_EPISODES}")
 
     # Extract bounds and generate the global DR matrix
-    dr_bounds = config["dr_absolute_bounds"]
-    keys = list(dr_bounds.keys())  # <-- NEW: Get parameter key names
+    chosen_bounds = config["dataset"]["chosen_bounds"]
+    dr_bounds = config[chosen_bounds]
+    nominal_params = config["nominal_params"]
+    keys = list(dr_bounds.keys())
     lower_bounds = [bounds[0] for bounds in dr_bounds.values()]
     upper_bounds = [bounds[1] for bounds in dr_bounds.values()]
     
@@ -87,6 +90,12 @@ if __name__ == "__main__":
     for i in range(NUM_EPISODES):
         row = dr_matrix[i % len(dr_matrix)]
         params_dict = {keys[j]: float(row[j]) for j in range(len(keys))}
+        
+        # Inject default values for nominal parameters not present in dr_bounds
+        for k, v in nominal_params.items():
+            if k not in params_dict:
+                params_dict[k] = float(v)
+                
         worker_args.append((i, params_dict, row))
     
     # 2. Use a Pool to run episodes in parallel

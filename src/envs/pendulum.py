@@ -66,16 +66,13 @@ class SinglePendulumEnv(gymnasium.Env):
             self.model.actuator_forcerange[self.actuator_id] = [-p["max_torque"], p["max_torque"]]
             
             self.model.dof_frictionloss[self.jnt_dof_adr] = p["frictionloss"]
-            if p.get("damping", None) is not None:
-                self.model.dof_damping[self.jnt_dof_adr] = p["damping"]
+            self.model.dof_damping[self.jnt_dof_adr] = p["damping"]
             self.model.dof_armature[self.jnt_dof_adr] = p["armature"]
             
             backlash_max_rad = np.deg2rad(p["backlash_max_deg"])
             self.model.jnt_range[self.backlash_id] = [-backlash_max_rad, backlash_max_rad]
-            if p.get("backlash_damping", None) is not None:
-                self.model.dof_damping[self.backlash_dof_adr] = p["backlash_damping"]
-            if p.get("backlash_armature", None) is not None:
-                self.model.dof_armature[self.backlash_dof_adr] = p["backlash_armature"]
+            self.model.dof_damping[self.backlash_dof_adr] = p["backlash_damping"]
+            self.model.dof_armature[self.backlash_dof_adr] = p["backlash_armature"]
 
         # Reset Physics
         mujoco.mj_resetData(self.model, self.data)
@@ -119,9 +116,9 @@ class SinglePendulumEnv(gymnasium.Env):
         # Scale velocity according to 45 RPM max speed of the motor (converted to rad/s)
         max_velocity = (45 / 60) * 2 * np.pi # Convert 45 RPM to rad/s
         scaled_pole_velocity = pole_velocity / max_velocity
-        # Scale target angle as well
-        scaled_target_angle = (self.target_angle + np.pi) / (2 * np.pi) * 2 - 1
         if self.track_targets:
+            # Scale target angle as well
+            scaled_target_angle = (self.target_angle + np.pi) / (2 * np.pi) * 2 - 1
             obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_target_angle], dtype=np.float64)
         else:
             obs = np.array([scaled_pole_angle, scaled_pole_velocity], dtype=np.float64)
@@ -144,31 +141,34 @@ class SinglePendulumEnv(gymnasium.Env):
         terminated = False
         obs, info = self._get_obs_info()
         
-        # --- DR-SENSITIVE REWARD CALCULATION ---
-        pole_angle = info["pole_angle"]
-        pole_velocity = info["pole_velocity"]
-        
-        # 1. Normalized Position Error (handles angle wrapping bugs gracefully)
-        angle_error = self.target_angle - pole_angle
-        angle_error = (angle_error + np.pi) % (2 * np.pi) - np.pi
-        r_pos = np.exp(-2.0 * np.abs(angle_error))
-        
-        # 2. Action Smoothness (Penalizes changes in command over time)
-        r_smooth = -np.square(action[0] - self.prev_action[0])
-        
-        # 3. Energy Penalty (Reads absolute torque force applied by motor constraint)
-        r_energy = -np.square(self.data.actuator_force[self.actuator_id])
-        
-        # 4. Stabilization Reward (Damps out velocity oscillation right at the goal)
-        r_stability = -np.square(pole_velocity) if np.abs(angle_error) < 0.05 else 0.0
-        
-        r_pos = 1.0 * r_pos
-        r_smooth = 0.2 * r_smooth
-        r_energy = 0.01 * r_energy
-        r_stability = 0.05 * r_stability
-        
-        # Composite reward configuration
-        reward = r_pos + r_smooth + r_energy + r_stability
+        if self.track_targets:
+            # --- DR-SENSITIVE REWARD CALCULATION ---
+            pole_angle = info["pole_angle"]
+            pole_velocity = info["pole_velocity"]
+            
+            # 1. Normalized Position Error (handles angle wrapping bugs gracefully)
+            angle_error = self.target_angle - pole_angle
+            angle_error = (angle_error + np.pi) % (2 * np.pi) - np.pi
+            r_pos = np.exp(-2.0 * np.abs(angle_error))
+            
+            # 2. Action Smoothness (Penalizes changes in command over time)
+            r_smooth = -np.square(action[0] - self.prev_action[0])
+            
+            # 3. Energy Penalty (Reads absolute torque force applied by motor constraint)
+            r_energy = -np.square(self.data.actuator_force[self.actuator_id])
+            
+            # 4. Stabilization Reward (Damps out velocity oscillation right at the goal)
+            r_stability = -np.square(pole_velocity) if np.abs(angle_error) < 0.05 else 0.0
+            
+            r_pos = 1.0 * r_pos
+            r_smooth = 0.2 * r_smooth
+            r_energy = 0.01 * r_energy
+            r_stability = 0.05 * r_stability
+            
+            # Composite reward configuration
+            reward = r_pos + r_smooth + r_energy + r_stability
+        else:
+            reward = 0.0  # No reward if not tracking targets
         
         if self.print_info:
             print(f"Step: {self.timesteps}, Angle Error: {angle_error:.3f}, r_pos: {r_pos:.3f}, r_smooth: {r_smooth:.6f}, r_energy: {r_energy:.3f}, r_stability: {r_stability:.6f}, Total Reward: {reward:.3f}")
