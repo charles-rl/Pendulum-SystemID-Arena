@@ -52,5 +52,5 @@ rl_hyperparameters:
   train_freq: 1
 
 wandb:
-  project: "Pendulum SystemID Arena"
+  project: "Pendulum-SystemID-Arena"
   run_name: "TQC_DomainRandomization_Phase1"

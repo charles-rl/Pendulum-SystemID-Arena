@@ -1,35 +1,38 @@
 seed: 42
 
+wandb:
+  project: "Pendulum-SystemID-Arena"
+  run_name: "CNNLSTM-SL-Baseline"
+
 hyperparameters:
   state_dims: 4
   action_dims: 1
   learning_rate: 0.0001
-  cnn1_dims: 64  # This means it is cnn1_dims * 4 parallel CNNS * 2 (state + action)
+  cnn1_dims: 128  # This means it is cnn1_dims * 4 parallel CNNS * 2 (state + action)
   cnn2_dims: 128  # This outputs cnn2_dims * 4 features to the lstm
-  lstm_dims: 128
-  weight_decay: 0.0001
+  lstm_dims: 64
+  weight_decay: 0.0
   clip_value: 5.0
-  batch_size: 256
-  epochs: 500
-  n_params: 6
-  lambda_ood: 0.1
-  id_ratio: 0.8
-  min_steps: 20
+  batch_size: 512
+  epochs: 400
+  min_steps: 100
 
 dataset:
   # For data collection
   # Formula for total timesteps is 2^m * number_of_signal_types * episode_length = total_timesteps
   # m = round(log2(desired_total_timesteps / (number_of_signal_types * episode_length)))
+  collection_signal_types: ["noise", "prbs", "multisine", "impulse", "chirp_normal", "chirp_normal", "chirp_shifted", "chirp_shifted", "chirp_shifted", "chirp_shifted"]
+  # collection_signal_types: ["impulse"]  # Only impulse
 
-  # Generate both, one for true OOD and the other for training
-  # For training with OOD
-  desired_total_timesteps: 50000000  # Can change when it doesn't follow power of 2
-  chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
-  raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
+  # You must run collection twice one for training and one for OOD
+  # For training
+  # desired_total_timesteps: 50000000  # Can change when it doesn't follow power of 2
+  # chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  # raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
   # For true OOD
-  # desired_total_timesteps: 1000000  # Can change when it doesn't follow power of 2
-  # chosen_bounds: "sysid_absolute_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
-  # raw_path: "./dataset/raw_absolute_pendulum_sysid_dataset.npz"
+  desired_total_timesteps: 1000000  # Can change when it doesn't follow power of 2
+  chosen_bounds: "sysid_absolute_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  raw_path: "./dataset/raw_ood_pendulum_sysid_dataset.npz"
 
   # For preprocessing and viewing the dataset
   encoder_resolution: 4096.0 # 12-bit encoder
@@ -53,18 +56,18 @@ nominal_params:
 # Pruned
 # This includes OOD + ID for training
 sysid_bounds:
-  kp: [400.0, 1600.0]
-  kv: [2.5, 16.0]
   max_torque: [2.6, 4.4]
   frictionloss: [0.02, 0.8]
+  damping: [0.2, 2.0]
   armature: [0.01, 0.16]
-  backlash_max_deg: [0.6, 1.1]
+  backlash_armature: [0.001, 0.1]
+  backlash_damping: [0.001, 1.0]
 
 # This is the absolute bounds and only used after training for evaluation
 sysid_absolute_bounds:
-  kp: [10.0, 2000.0]
-  kv: [0.2, 20.0]
   max_torque: [2.0, 5.0]
   frictionloss: [0.001, 1.0]
+  damping: [0.001, 3.0]
   armature: [0.001, 0.2]
-  backlash_max_deg: [0.5, 1.3]
+  backlash_armature: [0.0001, 0.2]
+  backlash_damping: [0.0, 2.0]

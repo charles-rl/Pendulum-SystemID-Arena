@@ -144,7 +144,7 @@ def main():
     )
 
     # 7. Start the training process
-    print(f"Starting TQC training on 'Bipedal-Robot-Test' for {config_rl['total_timesteps']} steps...")
+    print(f"Starting TQC training for {config_rl['total_timesteps']} steps...")
     model.learn(
         total_timesteps=config_rl['total_timesteps'],
         callback=[wandb_callback, eval_callback],  # Pass both callbacks to the learning process

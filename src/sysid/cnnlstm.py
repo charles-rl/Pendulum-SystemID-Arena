@@ -19,19 +19,24 @@ class CNNModel(nn.Module):
         self.cnn_high_freq = nn.Conv1d(
             in_channels=in_channels, out_channels=cnn_dims, kernel_size=3, padding="same"
         )
-        self.cnn_extreme_freq = nn.Conv1d(
+        self.cnn_extreme_freq1 = nn.Conv1d(
             in_channels=in_channels, out_channels=cnn_dims, kernel_size=2, padding="same"
+        )
+        self.cnn_extreme_freq2 = nn.Conv1d(
+            in_channels=cnn_dims, out_channels=cnn_dims, kernel_size=3, padding="same"
         )
         self.bn1_low_freq = nn.BatchNorm1d(cnn_dims)
         self.bn1_mid_freq = nn.BatchNorm1d(cnn_dims)
         self.bn1_high_freq = nn.BatchNorm1d(cnn_dims)
-        self.bn1_extreme_freq = nn.BatchNorm1d(cnn_dims)
+        self.bn1_extreme_freq1 = nn.BatchNorm1d(cnn_dims)
+        self.bn1_extreme_freq2 = nn.BatchNorm1d(cnn_dims)
         
     def forward(self, x):
         y_low = self.bn1_low_freq(F.mish(self.cnn_low_freq(x)))
         y_mid = self.bn1_mid_freq(F.mish(self.cnn_mid_freq(x)))
         y_high = self.bn1_high_freq(F.mish(self.cnn_high_freq(x)))
-        y_extreme = self.bn1_extreme_freq(F.mish(self.cnn_extreme_freq(x)))
+        y_extreme = self.bn1_extreme_freq1(F.mish(self.cnn_extreme_freq1(x)))
+        y_extreme = self.bn1_extreme_freq2(F.mish(self.cnn_extreme_freq2(y_extreme)))
         
         # We want it to be dim=1 because the shape becomes (batch_size, cnn_dims * 4, timesteps)
         # if dim=-1 then shape becomes (batch_size, cnn_dims, timesteps * 4)
@@ -51,7 +56,7 @@ class CNNLSTMModel(BaseModel):
         lstm_dims = config["lstm_dims"]
         weight_decay = float(config["weight_decay"])
         self.clip_value = config["clip_value"]
-        self.lambda_ood = config["lambda_ood"]
+        self.n_params = n_params
         
         self.cnn_states = CNNModel(in_channels=state_dims, cnn_dims=cnn1_dims).to(self.device)
         self.cnn_actions = CNNModel(in_channels=action_dims, cnn_dims=cnn1_dims).to(self.device)
@@ -73,14 +78,18 @@ class CNNLSTMModel(BaseModel):
             batch_first=True,
             bidirectional=True,
         )
-        self.ln_lstm = nn.LayerNorm(lstm_dims * 2)
         
         # Multiply by 2 because we have states and actions now
-        self.fc = nn.Linear(lstm_dims * 2 * 2, lstm_dims)
-        self.ln_fc = nn.LayerNorm(lstm_dims)
+        latent_input_dims = lstm_dims * 2
+        self.attention_weights = nn.Linear(latent_input_dims, 1)
         
-        self.mu_fc = nn.Linear(lstm_dims, n_params)
-        self.sigma_fc = nn.Linear(lstm_dims, n_params)
+        self.fc1 = nn.Linear(latent_input_dims, latent_input_dims)
+        self.ln_fc1 = nn.LayerNorm(latent_input_dims)
+        self.fc2 = nn.Linear(latent_input_dims, latent_input_dims)
+        self.ln_fc2 = nn.LayerNorm(latent_input_dims)
+        
+        self.mu_fc = nn.Linear(latent_input_dims, n_params)
+        self.sigma_fc = nn.Linear(latent_input_dims, n_params)
         
         self.optimizer = optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         self.to(self.device)
@@ -99,12 +108,15 @@ class CNNLSTMModel(BaseModel):
         
         output_lstm, (h_n, c_n) = self.lstm(y)
         
-        # We do a global mean and max pooling across all the sequence length dimension
-        mean_latent = output_lstm.mean(dim=1)
-        max_latent, _ = output_lstm.max(dim=1)
-        latent = torch.cat([mean_latent, max_latent], dim=1)
+        # 1. Compute raw attention scores for every timestep
+        scores = self.attention_weights(output_lstm) # Shape: (batch, timesteps, 1)
+        # 2. Softmax over the timestep dimension to get a probability distribution
+        attn_probs = F.softmax(scores, dim=1)        # Shape: (batch, timesteps, 1)
+        # 3. Compute weighted sum across time
+        latent = torch.sum(output_lstm * attn_probs, dim=1) # Shape: (batch, lstm_dims * 2)
         
-        y = self.ln_fc(F.mish(self.fc(latent)))
+        y = self.ln_fc1(F.mish(self.fc1(latent)))
+        y = self.ln_fc2(F.mish(self.fc2(y)))
         
         mu = torch.tanh(self.mu_fc(y)) * 1.2  # Scale the tanh to allow for OOD predictions
         sigma = torch.exp(self.sigma_fc(y)) + 1e-6  # epsilon added to help with the stability when the sigma is near 0

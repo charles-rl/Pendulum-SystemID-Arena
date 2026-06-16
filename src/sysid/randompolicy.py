@@ -76,14 +76,11 @@ class WarmUpActionPolicy:
                 
     def impulse_signal(self, timestep):
         half_max_steps = self.total_timesteps // 2
-        if 5 <= timestep < 15:
-            # Torque pulse positive at 100ms upto 300ms
+        if 5 <= timestep < 35:
             action = np.ones(self.action_space.shape)
-        elif half_max_steps + 5 <= timestep < half_max_steps + 15:
-            # Torque pulse negative at 6.1s upto 6.3s
+        elif half_max_steps + 5 <= timestep < half_max_steps + 35:
             action = -np.ones(self.action_space.shape)
         else:
-            # let it settle for about 10 seconds
             action = np.zeros(self.action_space.shape)
         return action
     

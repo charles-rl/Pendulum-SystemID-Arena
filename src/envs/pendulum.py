@@ -46,7 +46,7 @@ class SinglePendulumEnv(gymnasium.Env):
         self.prev_action = np.zeros((1,), dtype=np.float64) # Added to track action smoothness
         # Let's keep it at 64 bits
         # raw theta (goes beyond -pi and pi), angular velocity
-        observation_dims = 3 if self.track_targets else 2
+        observation_dims = 4 if self.track_targets else 3
         self.observation_space = gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(observation_dims,), dtype=np.float64)
         self.action_space = gymnasium.spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float64)
         
@@ -76,8 +76,8 @@ class SinglePendulumEnv(gymnasium.Env):
 
         # Reset Physics
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[self.jnt_qpos_adr] = np.random.uniform(-np.pi, np.pi)  # random initial angle
-        self.data.qvel[self.jnt_dof_adr] = np.random.uniform(-0.2, 0.2)  # small initial angular velocity
+        self.data.qpos[self.jnt_qpos_adr] = np.random.uniform(-0.035, 0.035)
+        self.data.qvel[self.jnt_dof_adr] = np.random.uniform(-0.01, 0.01)
         
         if self.track_targets:
             # Set target angle
@@ -97,6 +97,7 @@ class SinglePendulumEnv(gymnasium.Env):
         # For STS3215 motor, the encoder is mounted at the FINAL output shaft, so it measures the combined effect of the motor joint and the backlash joint
         pole_angle = self.data.qpos[self.jnt_qpos_adr] + self.data.qpos[self.backlash_qpos_adr]
         pole_velocity = self.data.qvel[self.jnt_dof_adr] + self.data.qvel[self.backlash_dof_adr]
+        motor_torque = self.data.actuator_force[self.actuator_id]
         
         current_parameters = {
             "kp": self.model.actuator_gainprm[self.actuator_id, 0],
@@ -116,13 +117,15 @@ class SinglePendulumEnv(gymnasium.Env):
         # Scale velocity according to 45 RPM max speed of the motor (converted to rad/s)
         max_velocity = (45 / 60) * 2 * np.pi # Convert 45 RPM to rad/s
         scaled_pole_velocity = pole_velocity / max_velocity
+        # TODO: Should this be scaled? Do we even know what it is?
+        scaled_motor_torque = motor_torque / current_parameters["max_torque"]
         if self.track_targets:
             # Scale target angle as well
             scaled_target_angle = (self.target_angle + np.pi) / (2 * np.pi) * 2 - 1
-            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_target_angle], dtype=np.float64)
+            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_motor_torque, scaled_target_angle], dtype=np.float64)
         else:
-            obs = np.array([scaled_pole_angle, scaled_pole_velocity], dtype=np.float64)
-        
+            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_motor_torque], dtype=np.float64)
+
         return obs, info
     
     def step(self, action):

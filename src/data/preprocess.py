@@ -10,9 +10,8 @@ with open("./src/configs/sysid_config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 # --- PATHS ---
-# Explicitly handle both paths to support your dual-dataset generator strategy
 RAW_TRAIN_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"
-RAW_ABS_PATH = "./dataset/raw_absolute_pendulum_sysid_dataset.npz"
+RAW_ABS_PATH = "./dataset/raw_ood_pendulum_sysid_dataset.npz"
 
 PROCESSED_DATA_PATH = config["dataset"]["processed_path"]
 SCALER_PATH = config["dataset"]["scalers_path"]
@@ -87,38 +86,18 @@ def main():
     X_abs_eng = preprocess_raw_data(X_abs_raw, ENCODER_RESOLUTION, DT)
 
     # =========================================================
-    # 3. SPLITTING LOGIC (ID, Negative OOD, and True OOD)
+    # 3. SPLITTING LOGIC (ID and True OOD only)
     # =========================================================
     print("Processing split boundaries...")
-    MARGIN = 0.02
     sysid_bounds = config["sysid_bounds"]
     
-    # A. Split the TRAINING dataset into ID and Negative OOD [3]
-    id_masks = []
-    for i, param in enumerate(sysid_bounds.keys()):
-        p_min, p_max = sysid_bounds[param]
-        p_range = p_max - p_min
-        
-        lower_bound = p_min + (MARGIN * p_range)
-        upper_bound = p_max - (MARGIN * p_range)
-        
-        # Safe inner 96% envelope mask [3]
-        id_mask = (Y_train_raw[:, i] >= lower_bound) & (Y_train_raw[:, i] <= upper_bound)
-        id_masks.append(id_mask)
-        
-    id_masks = np.stack(id_masks, axis=0)
-    is_id = np.all(id_masks, axis=0)     # True if ALL 6 params lie in the safe inner 96% [3]
-    is_neg_ood = ~is_id                  # Remaining 24% of training space sits in boundary margins [3]
-
-    X_in = X_train_eng[is_id]
-    actions_in = actions_train_raw[is_id]
-    Y_in = Y_train_raw[is_id]
-
-    X_neg_ood = X_train_eng[is_neg_ood]
-    actions_neg_ood = actions_train_raw[is_neg_ood]
-    Y_neg_ood = Y_train_raw[is_neg_ood]
+    # A. 100% of the training dataset is processed as In-Distribution (ID) [3]
+    X_in = X_train_eng
+    actions_in = actions_train_raw
+    Y_in = Y_train_raw
 
     # B. Extract True OOD from the ABSOLUTE dataset [3]
+    # Any trajectory that has at least one parameter outside the sysid_bounds is True OOD [3]
     inside_bounds_masks = []
     for i, param in enumerate(sysid_bounds.keys()):
         p_min, p_max = sysid_bounds[param]
@@ -127,18 +106,16 @@ def main():
         
     inside_bounds_masks = np.stack(inside_bounds_masks, axis=0)
     is_inside_bounds = np.all(inside_bounds_masks, axis=0)
-    is_true_ood = ~is_inside_bounds      # Any sample outside the training bounds completely [3]
+    is_true_ood = ~is_inside_bounds
 
     X_true_ood = X_abs_eng[is_true_ood]
     actions_true_ood = actions_abs_raw[is_true_ood]
     Y_true_ood = Y_abs_raw[is_true_ood]
 
-    print(f"Total Active Training Space (ID + Neg OOD): {len(X_train_eng)}")
-    print(f"  -> ID (NLL targets):      {len(X_in)} ({len(X_in)/len(X_train_eng)*100:.1f}%)")
-    print(f"  -> Neg OOD (Hinge targets): {len(X_neg_ood)} ({len(X_neg_ood)/len(X_train_eng)*100:.1f}%)")
+    print(f"Total Active Training Space (ID): {len(X_train_eng)}")
     print(f"Total True OOD (Absolute Holdout): {len(X_true_ood)}")
 
-    # Split ID data (80% Train, 10% Val, 10% Test)
+    # Split ID data (80% Train, 10% Val, 10% Test) [3]
     X_temp, X_test, actions_temp, actions_test, Y_temp, Y_test = train_test_split(
         X_in, actions_in, Y_in, test_size=0.1, random_state=42
     )
@@ -146,20 +123,12 @@ def main():
         X_temp, actions_temp, Y_temp, test_size=1/9, random_state=42
     )
 
-    # Split Negative OOD data (80% Train, 10% Val, 10% Test)
-    X_neg_temp, X_neg_test, actions_neg_temp, actions_neg_test, Y_neg_temp, Y_neg_test = train_test_split(
-        X_neg_ood, actions_neg_ood, Y_neg_ood, test_size=0.1, random_state=42
-    )
-    X_neg_train, X_neg_val, actions_neg_train, actions_neg_val, Y_neg_train, Y_neg_val = train_test_split(
-        X_neg_temp, actions_neg_temp, Y_neg_temp, test_size=1/9, random_state=42
-    )
-
     # =========================================================
     # 4. NORMALIZATION & SCALING
     # =========================================================
     print("Fitting scalers...")
 
-    # State Scaling (Fit on ID Training data only)
+    # State Scaling (Fit on ID Training data only) [3]
     X_train_flat = X_train.reshape(-1, 4)
     x_scaler = StandardScaler()
     X_train_scaled = x_scaler.fit_transform(X_train_flat).reshape(X_train.shape)
@@ -168,11 +137,7 @@ def main():
     X_test_scaled = x_scaler.transform(X_test.reshape(-1, 4)).reshape(X_test.shape)
     X_true_ood_scaled = x_scaler.transform(X_true_ood.reshape(-1, 4)).reshape(X_true_ood.shape)
     
-    X_neg_train_scaled = x_scaler.transform(X_neg_train.reshape(-1, 4)).reshape(X_neg_train.shape)
-    X_neg_val_scaled = x_scaler.transform(X_neg_val.reshape(-1, 4)).reshape(X_neg_val.shape)
-    X_neg_test_scaled = x_scaler.transform(X_neg_test.reshape(-1, 4)).reshape(X_neg_test.shape)
-    
-    # Action Scaling (Fit on ID Action Training only)
+    # Action Scaling (Fit on ID Action Training only) [3]
     actions_train_flat = actions_train.reshape(-1, num_actions)
     action_scaler = StandardScaler()
     actions_train_scaled = action_scaler.fit_transform(actions_train_flat).reshape(actions_train.shape)
@@ -180,28 +145,19 @@ def main():
     actions_val_scaled = action_scaler.transform(actions_val.reshape(-1, num_actions)).reshape(actions_val.shape)
     actions_test_scaled = action_scaler.transform(actions_test.reshape(-1, num_actions)).reshape(actions_test.shape)
     actions_true_ood_scaled = action_scaler.transform(actions_true_ood.reshape(-1, num_actions)).reshape(actions_true_ood.shape)
-    
-    actions_neg_train_scaled = action_scaler.transform(actions_neg_train.reshape(-1, num_actions)).reshape(actions_neg_train.shape)
-    actions_neg_val_scaled = action_scaler.transform(actions_neg_val.reshape(-1, num_actions)).reshape(actions_neg_val.shape)
-    actions_neg_test_scaled = action_scaler.transform(actions_neg_test.reshape(-1, num_actions)).reshape(actions_neg_test.shape)
 
-    # Dynamic Y Scaling directly from limits configuration [3]
-    sysid_bounds = config["sysid_bounds"]
+    # Y Scaling - Fit strictly to the training bounds to simulate un-modeled OOD limits [3]
     abs_min = [sysid_bounds[k][0] for k in sysid_bounds.keys()]
     abs_max = [sysid_bounds[k][1] for k in sysid_bounds.keys()]
-    y_absolute_limits = np.array([abs_min, abs_max])
+    y_limits = np.array([abs_min, abs_max])
 
     y_scaler = MinMaxScaler(feature_range=(-1, 1))
-    y_scaler.fit(y_absolute_limits) 
+    y_scaler.fit(y_limits) 
 
     Y_train_scaled = y_scaler.transform(Y_train)
     Y_val_scaled = y_scaler.transform(Y_val)
     Y_test_scaled = y_scaler.transform(Y_test)
-    Y_true_ood_scaled = y_scaler.transform(Y_true_ood)
-    
-    Y_neg_train_scaled = y_scaler.transform(Y_neg_train)
-    Y_neg_val_scaled = y_scaler.transform(Y_neg_val)
-    Y_neg_test_scaled = y_scaler.transform(Y_neg_test)
+    Y_true_ood_scaled = y_scaler.transform(Y_true_ood)  # Scales beyond [-1.0, 1.0] [3]
 
     # =========================================================
     # 5. SAVE PROCESSED DATA AND SCALERS
@@ -209,28 +165,21 @@ def main():
     print("Saving processed data and scalers...")
     np.savez_compressed(
         PROCESSED_DATA_PATH,
-        # ID Datasets (Positive NLL Targets) [3]
+        # ID Datasets (NLL Targets) [3]
         states_train=X_train_scaled, actions_train=actions_train_scaled, Y_train=Y_train_scaled,
         states_val=X_val_scaled,     actions_val=actions_val_scaled,     Y_val=Y_val_scaled,
         states_test=X_test_scaled,   actions_test=actions_test_scaled,   Y_test=Y_test_scaled,
         
         # True OOD Dataset (Absolute Holdout harvested from the absolute run) [3]
-        states_true_ood=X_true_ood_scaled, actions_true_ood=actions_true_ood_scaled, Y_true_ood=Y_true_ood_scaled,
-        
-        # Negative OOD Datasets (Hinge Boundary Targets harvested from the primary run) [3]
-        states_neg_train=X_neg_train_scaled, actions_neg_train=actions_neg_train_scaled, Y_neg_train=Y_neg_train_scaled,
-        states_neg_val=X_neg_val_scaled,     actions_neg_val=actions_neg_val_scaled,     Y_neg_val=Y_neg_val_scaled,
-        states_neg_test=X_neg_test_scaled,   actions_neg_test=actions_neg_test_scaled,   Y_neg_test=Y_neg_test_scaled
+        states_true_ood=X_true_ood_scaled, actions_true_ood=actions_true_ood_scaled, Y_true_ood=Y_true_ood_scaled
     )
     
-    # Save the scalers so we can inverse_transform predictions during evaluation
     with open(SCALER_PATH, 'wb') as f:
         pickle.dump({'x_scaler': x_scaler, 'action_scaler': action_scaler, 'y_scaler': y_scaler}, f)
 
     print("Preprocessing Complete!")
-    print(f"Train ID Shape:       {X_train_scaled.shape} / {actions_train_scaled.shape}")
-    print(f"Train Neg-OOD Shape:  {X_neg_train_scaled.shape} / {actions_neg_train_scaled.shape}")
-    print(f"True OOD Shape:       {X_true_ood_scaled.shape} / {actions_true_ood_scaled.shape}")
+    print(f"Train ID Shape: {X_train_scaled.shape} / {actions_train_scaled.shape}")
+    print(f"True OOD Shape: {X_true_ood_scaled.shape} / {actions_true_ood_scaled.shape}")
 
 
 if __name__ == "__main__":
