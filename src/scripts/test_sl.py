@@ -17,9 +17,9 @@ with open("./src/configs/sysid_config.yaml", "r") as f:
 
 HPARAMS = config["hyperparameters"]
 RAW_TRAIN_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"
-SCALER_PATH = config["dataset"]["scalers_path"]
+SCALER_PATH = config["dataset"]["scalers_path"] if not config["dataset"]["include_rl_dataset"] else config["dataset"]["rl_scalers_path"]
 FIGURES_PATH = config["dataset"]["figures_path"]
-CHKPT_PATH = config.get("model", {}).get("chkpt_path", "./models/best_sysid_model_sl.pth")
+CHKPT_PATH = config["model"]["chkpt_path"] if not config["dataset"]["include_rl_dataset"] else config["model"]["rl_chkpt_path"]
 ENCODER_RESOLUTION = config["dataset"]["encoder_resolution"]
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,8 +36,12 @@ SIGNAL_NAMES = {
     6: "Chirp (Shifted)",
     7: "Chirp (Shifted)",
     8: "Chirp (Shifted)",
-    9: "Chirp (Shifted)"
+    9: "Chirp (Shifted)",
+    10: "RL Explorer"
 }
+
+def get_signal_name(idx):
+    return SIGNAL_NAMES.get(int(idx), f"RL/Unknown (ID: {idx})")
 
 def main():
     print(f"Device: {DEVICE}")
@@ -67,29 +71,94 @@ def main():
     X_engineered = preprocess_raw_data(X_raw, ENCODER_RESOLUTION, DT)
 
     # Reconstruct ID masks strictly matching preprocess.py [3]
+    # sysid_bounds = config["sysid_bounds"]
+    # param_names = list(sysid_bounds.keys())
+    
+    # # Track physical bounds ranges for normalization
+    # param_ranges = np.array([sysid_bounds[k][1] - sysid_bounds[k][0] for k in param_names])
+    
+    # MARGIN = 0.02
+    # id_masks = []
+    # for i, param in enumerate(param_names):
+    #     p_min, p_max = sysid_bounds[param]
+    #     p_range = p_max - p_min
+    #     lower_bound = p_min + (MARGIN * p_range)
+    #     upper_bound = p_max - (MARGIN * p_range)
+    #     id_mask = (Y_raw[:, i] >= lower_bound) & (Y_raw[:, i] <= upper_bound)
+    #     id_masks.append(id_mask)
+        
+    # is_id = np.all(np.stack(id_masks, axis=0), axis=0)
+
+    # # Filter down to ID pool
+    # X_in = X_engineered[is_id]
+    # actions_in = actions_raw[is_id]
+    # Y_in = Y_raw[is_id]
+    # signals_in = signals_raw[is_id]
+    
+    # Reconstruct ID masks strictly matching preprocess.py [3]
     sysid_bounds = config["sysid_bounds"]
     param_names = list(sysid_bounds.keys())
     
     # Track physical bounds ranges for normalization
     param_ranges = np.array([sysid_bounds[k][1] - sysid_bounds[k][0] for k in param_names])
+
+    # DYNAMIC COLUMN ALIGNMENT: 
+    # It attempts to read 'raw_parameter_order' from your config. If it doesn't find it,
+    # it safely falls back to the original 6-parameter order to align indices [3].
+    RAW_PARAM_ORDER = config["dataset"].get(
+        "raw_parameter_order", 
+        ["frictionloss", "damping", "armature", "backlash_armature", "backlash_damping"]
+    )
+    active_indices = [RAW_PARAM_ORDER.index(name) for name in param_names]
     
     MARGIN = 0.02
     id_masks = []
-    for i, param in enumerate(param_names):
+    for idx, param in zip(active_indices, param_names):
         p_min, p_max = sysid_bounds[param]
         p_range = p_max - p_min
         lower_bound = p_min + (MARGIN * p_range)
         upper_bound = p_max - (MARGIN * p_range)
-        id_mask = (Y_raw[:, i] >= lower_bound) & (Y_raw[:, i] <= upper_bound)
+        
+        # Correctly index Y_raw dynamically based on the NPZ raw column order [3]
+        id_mask = (Y_raw[:, idx] >= lower_bound) & (Y_raw[:, idx] <= upper_bound)
         id_masks.append(id_mask)
         
     is_id = np.all(np.stack(id_masks, axis=0), axis=0)
 
-    # Filter down to ID pool
+    # Filter down to ID pool and slice columns strictly to match your active config parameters [3]
     X_in = X_engineered[is_id]
     actions_in = actions_raw[is_id]
-    Y_in = Y_raw[is_id]
+    Y_in = Y_raw[is_id][:, active_indices]  # Slices Y to 5 active parameters in the correct order
     signals_in = signals_raw[is_id]
+
+    # =========================================================================
+    # NEW: Inject Consolidated RL Explorer Trajectories into the ID evaluation pool
+    # =========================================================================
+    if config["dataset"]["include_rl_dataset"]:
+        rl_data_path = config["dataset"]["rl_raw_processed_path"]
+        if os.path.exists(rl_data_path):
+            print(f"Loading and appending RL dataset to matching split space: {rl_data_path}")
+            rl_data = np.load(rl_data_path)
+            X_rl_raw = rl_data['trajectories']
+            actions_rl = rl_data['actions']
+            Y_rl = rl_data['parameters']
+            
+            # SIMPLIFIED STEP: Completely ignore internal 0, 1, 2 indices and force index 10
+            signals_rl = np.full(X_rl_raw.shape[0], 10, dtype=np.int32)
+            
+            # Map channel dimensions smoothly matching the wrapper's noise profiles
+            X_rl_eng = np.zeros((X_rl_raw.shape[0], X_rl_raw.shape[1], 5))
+            X_rl_eng[:, :, 0] = X_rl_raw[:, :, 0]
+            X_rl_eng[:, :, 1] = X_rl_raw[:, :, 1]
+            X_rl_eng[:, :, 2] = X_rl_raw[:, :, 2]
+            X_rl_eng[:, :, 3] = np.cos(X_rl_raw[:, :, 0])
+            X_rl_eng[:, :, 4] = np.sin(X_rl_raw[:, :, 0])
+            
+            # Concat into evaluation baseline space before train_test_split
+            X_in = np.concatenate([X_in, X_rl_eng], axis=0)
+            actions_in = np.concatenate([actions_in, actions_rl], axis=0)
+            Y_in = np.concatenate([Y_in, Y_rl], axis=0)
+            signals_in = np.concatenate([signals_in, signals_rl], axis=0)
 
     # Reconstruct the exact test split (random_state=42) [3]
     _, X_test, _, actions_test, _, Y_test, _, signals_test = train_test_split(
@@ -99,7 +168,7 @@ def main():
     print(f"Synchronized unseen ID Test Set size: {len(X_test)} episodes")
 
     # 3. Apply ID Scalers strictly [3]
-    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 4)).reshape(X_test.shape)
+    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 5)).reshape(X_test.shape)
     actions_test_scaled = action_scaler.transform(actions_test.reshape(-1, num_actions := actions_test.shape[2])).reshape(actions_test.shape)
     
     # 4. Load Model

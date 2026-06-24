@@ -2,6 +2,7 @@ import numpy as np
 
 class WarmUpActionPolicy:
     """_summary_
+    # NOTE: Can't handle multiple actions dims(?)
     Just produce random actions for the environment for system identification. It has multiple functions.
     1. White Noise - Just pure random actions
     2. Pseudo-Random Binary Sequence (PRBS) - PRBS is a classic SysID signal that randomly jumps between a maximum and minimum value (e.g., -1 and 1) at discrete time intervals.

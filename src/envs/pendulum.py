@@ -117,7 +117,7 @@ class SinglePendulumEnv(gymnasium.Env):
         # Scale velocity according to 45 RPM max speed of the motor (converted to rad/s)
         max_velocity = (45 / 60) * 2 * np.pi # Convert 45 RPM to rad/s
         scaled_pole_velocity = pole_velocity / max_velocity
-        # TODO: Should this be scaled? Do we even know what it is?
+        # NOTE: In reality, the torque is pretty accurate, the torque constant just needs some noise
         scaled_motor_torque = motor_torque / current_parameters["max_torque"]
         if self.track_targets:
             # Scale target angle as well
@@ -129,6 +129,7 @@ class SinglePendulumEnv(gymnasium.Env):
         return obs, info
     
     def step(self, action):
+        action = np.clip(action, self.action_space.low, self.action_space.high)
         self.data.ctrl = action * self.actuator_scale
 
         for _ in range(self.FRAME_SKIP):
@@ -170,11 +171,28 @@ class SinglePendulumEnv(gymnasium.Env):
             
             # Composite reward configuration
             reward = r_pos + r_smooth + r_energy + r_stability
-        else:
-            reward = 0.0  # No reward if not tracking targets
+            
+            if self.print_info:
+                print(f"Step: {self.timesteps}, Angle Error: {angle_error:.3f}, r_pos: {r_pos:.3f}, r_smooth: {r_smooth:.6f}, r_energy: {r_energy:.3f}, r_stability: {r_stability:.6f}, Total Reward: {reward:.3f}")
         
-        if self.print_info:
-            print(f"Step: {self.timesteps}, Angle Error: {angle_error:.3f}, r_pos: {r_pos:.3f}, r_smooth: {r_smooth:.6f}, r_energy: {r_energy:.3f}, r_stability: {r_stability:.6f}, Total Reward: {reward:.3f}")
+        else:
+            # --- DR-SENSITIVE REWARD CALCULATION ---
+            pole_angle = info["pole_angle"]
+            pole_velocity = info["pole_velocity"]
+            
+            # Action Smoothness (Penalizes changes in command over time)
+            r_smooth = -np.square(action[0] - self.prev_action[0])
+            
+            # Energy Penalty (Reads absolute torque force applied by motor constraint)
+            r_energy = -np.square(self.data.actuator_force[self.actuator_id])
+            
+            # NOTE: No joint limits because this env has no limits
+            r_smooth = 0.5 * r_smooth
+            r_energy = 0.05 * r_energy
+            reward = r_smooth + r_energy
+            
+            if self.print_info:
+                print(f"Step: {self.timesteps}, r_smooth: {r_smooth:.6f}, r_energy: {r_energy:.3f}, r_stability: {r_stability:.6f}, Total Reward: {reward:.3f}")
         
         # Store state for next cycle smoothness calculation
         self.prev_action = np.copy(action)

@@ -1,0 +1,72 @@
+seed: 1
+cuda: True
+track: True  # Set to true to log to Weights & Biases
+power_of_two_samples: 10
+n_params: 5
+scaler_path: "./models/scalers.pkl"
+rl_collected_dir: "./dataset/raw_rl_pendulum_sysid_episodes"
+
+nominal_params:
+  kp: 998.22
+  kv: 2.731
+  max_torque: 2.94
+  frictionloss: 0.052
+  damping: 0.6
+  armature: 0.028
+  backlash_max_deg: 0.87
+  backlash_armature: 0.01
+  backlash_damping: 0.01
+
+dr_bounds:
+  frictionloss: [0.02, 0.8]
+  damping: [0.2, 2.0]
+  armature: [0.01, 0.16]
+  backlash_armature: [0.001, 0.1]
+  backlash_damping: [0.001, 1.0]
+
+realism:
+  encoder_resolution: 4096.0 # 12-bit encoder
+
+wandb:
+  project: "Pendulum-SystemID-Arena"
+  run_name: "InvertedDoublePendulum_Test"
+
+env:
+  id: "InvertedDoublePendulum-v4"  # Perfect test environment: fast but challenging
+  num_envs: 128  # Apparently optimal number of environments for MuJoCo(?)
+  num_steps: 1024  # Apparently optimal number of steps to understand the 'cause and effect' of the environment(?)
+  total_timesteps: 3000000
+
+hyperparameters:
+  learning_rate: 3.0e-4
+  anneal_lr: true
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 32
+  update_epochs: 10
+  norm_adv: true
+  clip_coef: 0.2
+  clip_vloss: true
+  ent_coef: 0.0
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  rpo_alpha: 0.01  # Very sensitive parameter
+  target_kl: null
+
+actor:
+  cnn_output_dims: 2
+  # We start small then we can increase the size of the network if needed
+  # [19, 280, 160, 6] model assumption takes 1079 microseconds in the ESP32
+  fc1_dims: 128
+  fc2_dims: 64
+  history_sequence_length: 5
+  num_obs_flatten: 2
+
+critic:
+  cnn1_output_dims: 16
+  cnn2_output_dims: 8
+  fc1_dims: 256
+  fc2_dims: 256
+  fc3_dims: 256
+  privileged_history_sequence_length: 50
+  num_obs_flatten: 5

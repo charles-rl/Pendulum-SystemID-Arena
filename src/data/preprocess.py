@@ -6,6 +6,9 @@ from sklearn.model_selection import train_test_split
 from src.envs.pendulum import SinglePendulumEnv
 import yaml
 
+# TODO: Action needs some noise and discretization to reflect the real world, maybe some delays too but only a little bit
+# TODO: Do the noise here such that it will be universal and taken from utils.
+
 with open("./src/configs/sysid_config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
@@ -13,19 +16,19 @@ with open("./src/configs/sysid_config.yaml", "r") as f:
 RAW_TRAIN_PATH = "./dataset/raw_pendulum_sysid_dataset.npz"
 RAW_ABS_PATH = "./dataset/raw_ood_pendulum_sysid_dataset.npz"
 
-PROCESSED_DATA_PATH = config["dataset"]["processed_path"]
-SCALER_PATH = config["dataset"]["scalers_path"]
+PROCESSED_DATA_PATH = config["dataset"]["processed_path"] if not config["dataset"]["include_rl_dataset"] else config["dataset"]["rl_processed_path"]
+SCALER_PATH = config["dataset"]["scalers_path"] if not config["dataset"]["include_rl_dataset"] else config["dataset"]["rl_scalers_path"]
 ENCODER_RESOLUTION = config["dataset"]["encoder_resolution"]
 
 
 def preprocess_raw_data(X_states_raw, ENCODER_RESOLUTION, DT):
     """
-    Modular preprocessing helper to apply quantization noise and feature extraction
-    identically across both raw datasets to prevent training/evaluation distribution shifts [3].
+    Modular preprocessing helper expanded to support unscaled motor torque channels.
+    Assumes X_states_raw has shape (N, T, 3) where index 2 is motor torque.
     """
     N, timesteps, _ = X_states_raw.shape
     
-    # 1. Apply 12-bit encoder quantization and operational tick jitter
+    # 1. Apply 12-bit encoder quantization and operational tick jitter to angle
     theta_noisy = np.round(X_states_raw[:, :, 0] * (ENCODER_RESOLUTION / (2 * np.pi)))
     noise_ticks = 3
     theta_noisy += np.round(np.random.normal(0, noise_ticks, theta_noisy.shape))
@@ -35,16 +38,16 @@ def preprocess_raw_data(X_states_raw, ENCODER_RESOLUTION, DT):
     sigma_omega = (noise_ticks * 2 * np.pi) / (ENCODER_RESOLUTION * DT)
     omega_noisy = X_states_raw[:, :, 1] + np.random.normal(0, sigma_omega, X_states_raw[:, :, 1].shape)
     
-    X_noisy = np.zeros(X_states_raw.shape)
-    X_noisy[:, :, 0] = theta_noisy
-    X_noisy[:, :, 1] = omega_noisy
+    # Extract clean torque signal directly from channel index 2
+    torque = X_states_raw[:, :, 2]
 
-    # 2. Extract trigonometric continuous mappings to prevent angle wrap-around discontinuities
-    X_engineered = np.zeros((N, timesteps, 4))
-    X_engineered[:, :, 0] = X_noisy[:, :, 0]              # theta
-    X_engineered[:, :, 1] = X_noisy[:, :, 1]              # omega
-    X_engineered[:, :, 2] = np.cos(X_noisy[:, :, 0])      # cos(theta)
-    X_engineered[:, :, 3] = np.sin(X_noisy[:, :, 0])      # sin(theta)
+    # 2. Re-map trigonometric configurations across 5 channels
+    X_engineered = np.zeros((N, timesteps, 5))
+    X_engineered[:, :, 0] = theta_noisy              # theta
+    X_engineered[:, :, 1] = omega_noisy              # omega
+    X_engineered[:, :, 2] = torque                   # ADDED: torque
+    X_engineered[:, :, 3] = np.cos(theta_noisy)      # cos(theta)
+    X_engineered[:, :, 4] = np.sin(theta_noisy)      # sin(theta)
     
     return X_engineered
 
@@ -96,7 +99,33 @@ def main():
     actions_in = actions_train_raw
     Y_in = Y_train_raw
 
-    # B. Extract True OOD from the ABSOLUTE dataset [3]
+    # B. Inject Consolidated RL Explorer Trajectories smoothly into the ID training pool
+    if config["dataset"]["include_rl_dataset"]:
+        rl_data_path = config["dataset"]["rl_raw_processed_path"]
+        if os.path.exists(rl_data_path):
+            print(f"Loading and appending RL collected dataset: {rl_data_path}")
+            rl_data = np.load(rl_data_path)
+            X_rl_raw = rl_data['trajectories']  # Shape: (N, T, 3) -> [theta, omega, torque]
+            actions_rl = rl_data['actions']     # Shape: (N, T, Action_Dim)
+            Y_rl = rl_data['parameters']        # Shape: (N, Param_Dim)
+            
+            # Perform channel expansion (3 -> 5) WITHOUT adding extra quantization noise or tick jitter
+            X_rl_eng = np.zeros((X_rl_raw.shape[0], X_rl_raw.shape[1], 5))
+            X_rl_eng[:, :, 0] = X_rl_raw[:, :, 0]             # theta (already noisy from wrapper)
+            X_rl_eng[:, :, 1] = X_rl_raw[:, :, 1]             # omega (already noisy from wrapper)
+            X_rl_eng[:, :, 2] = X_rl_raw[:, :, 2]             # torque
+            X_rl_eng[:, :, 3] = np.cos(X_rl_raw[:, :, 0])     # cos(theta)
+            X_rl_eng[:, :, 4] = np.sin(X_rl_raw[:, :, 0])     # sin(theta)
+            
+            # Concatenate right into the In-Distribution matrix space before the data splitting pass
+            X_in = np.concatenate([X_in, X_rl_eng], axis=0)
+            actions_in = np.concatenate([actions_in, actions_rl], axis=0)
+            Y_in = np.concatenate([Y_in, Y_rl], axis=0)
+            print(f"Successfully merged {X_rl_raw.shape[0]} active RL trajectories into ID dataset.")
+        else:
+            print(f"Warning: 'include_rl_dataset' is True but file was not found at {rl_data_path}. Proceeding with base data.")
+
+    # C. Extract True OOD from the ABSOLUTE dataset [3]
     # Any trajectory that has at least one parameter outside the sysid_bounds is True OOD [3]
     inside_bounds_masks = []
     for i, param in enumerate(sysid_bounds.keys()):
@@ -129,13 +158,14 @@ def main():
     print("Fitting scalers...")
 
     # State Scaling (Fit on ID Training data only) [3]
-    X_train_flat = X_train.reshape(-1, 4)
+    # Change from .reshape(-1, 4) to .reshape(-1, 5) to account for the new torque column
+    X_train_flat = X_train.reshape(-1, 5)
     x_scaler = StandardScaler()
     X_train_scaled = x_scaler.fit_transform(X_train_flat).reshape(X_train.shape)
     
-    X_val_scaled = x_scaler.transform(X_val.reshape(-1, 4)).reshape(X_val.shape)
-    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 4)).reshape(X_test.shape)
-    X_true_ood_scaled = x_scaler.transform(X_true_ood.reshape(-1, 4)).reshape(X_true_ood.shape)
+    X_val_scaled = x_scaler.transform(X_val.reshape(-1, 5)).reshape(X_val.shape)
+    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 5)).reshape(X_test.shape)
+    X_true_ood_scaled = x_scaler.transform(X_true_ood.reshape(-1, 5)).reshape(X_true_ood.shape)
     
     # Action Scaling (Fit on ID Action Training only) [3]
     actions_train_flat = actions_train.reshape(-1, num_actions)

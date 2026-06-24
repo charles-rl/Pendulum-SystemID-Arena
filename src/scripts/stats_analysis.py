@@ -8,6 +8,7 @@ from sb3_contrib import TQC
 from src.envs.pendulum import SinglePendulumEnv
 
 def main():
+    # TODO: To add more data, just use more seeds to test against.
     # 1. Load Configurations
     with open("./src/configs/rl_config.yaml", "r") as f:
         config = yaml.safe_load(f)

@@ -6,6 +6,7 @@ __pycache__/
 temp/
 wandb/
 models/
-dataset/
+dataset/*.npz
+dataset/rl_collected/
 MUJOCO_LOG.txt
 runs/

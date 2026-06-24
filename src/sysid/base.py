@@ -36,12 +36,14 @@ class BaseModel(nn.Module):
         }
         return loss_metrics
 
-    def save_model(self):
-        print("...saving checkpoint...")
+    def save_model(self, print_info=True):
+        if print_info:
+            print("...saving checkpoint...")
         torch.save({"model": self.state_dict()}, self.chkpt_file_pth)
 
-    def load_model(self):
-        print("...loading checkpoint...")
+    def load_model(self, print_info=True):
+        if print_info:
+            print("...loading checkpoint...")
         checkpoint = torch.load(self.chkpt_file_pth, map_location=self.device)
         self.load_state_dict(checkpoint["model"])
 

@@ -4,8 +4,12 @@ wandb:
   project: "Pendulum-SystemID-Arena"
   run_name: "CNNLSTM-SL-Baseline"
 
+model:
+  chkpt_path: "./models/best_sysid_model_sl.pth"
+  rl_chkpt_path: "./models/best_sysid_model_sl_with_rl.pth"
+
 hyperparameters:
-  state_dims: 4
+  state_dims: 5
   action_dims: 1
   learning_rate: 0.0001
   cnn1_dims: 128  # This means it is cnn1_dims * 4 parallel CNNS * 2 (state + action)
@@ -14,8 +18,8 @@ hyperparameters:
   weight_decay: 0.0
   clip_value: 5.0
   batch_size: 512
-  epochs: 400
-  min_steps: 100
+  epochs: 1000
+  min_steps: 50
 
 dataset:
   # For data collection
@@ -25,14 +29,23 @@ dataset:
   # collection_signal_types: ["impulse"]  # Only impulse
 
   # You must run collection twice one for training and one for OOD
-  # For training
-  # desired_total_timesteps: 50000000  # Can change when it doesn't follow power of 2
-  # chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
-  # raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
-  # For true OOD
-  desired_total_timesteps: 1000000  # Can change when it doesn't follow power of 2
-  chosen_bounds: "sysid_absolute_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
-  raw_path: "./dataset/raw_ood_pendulum_sysid_dataset.npz"
+  # --- For training ---
+  # desired_total_timesteps: 5000000
+  desired_total_timesteps: 20000000  # Can change when it doesn't follow power of 2
+  chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
+  # --- For true OOD ---
+  # desired_total_timesteps: 1000000  # Can change when it doesn't follow power of 2
+  # chosen_bounds: "sysid_absolute_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
+  # raw_path: "./dataset/raw_ood_pendulum_sysid_dataset.npz"
+
+  # For preprocessing with RL collected data
+  # DEFAULT IS FALSE
+  include_rl_dataset: True  # Overrides the scalers path above if True
+  use_sl_with_rl_model: True  # If True, uses the SL model trained with RL data for the RL explorer
+  rl_raw_processed_path: "./dataset/raw_processed_rl_pendulum_dataset.npz"
+  rl_scalers_path: "./models/rl_scalers.pkl"
+  rl_processed_path: "./dataset/processed_rl_pendulum_dataset.npz"
 
   # For preprocessing and viewing the dataset
   encoder_resolution: 4096.0 # 12-bit encoder
@@ -56,7 +69,6 @@ nominal_params:
 # Pruned
 # This includes OOD + ID for training
 sysid_bounds:
-  max_torque: [2.6, 4.4]
   frictionloss: [0.02, 0.8]
   damping: [0.2, 2.0]
   armature: [0.01, 0.16]
@@ -65,7 +77,6 @@ sysid_bounds:
 
 # This is the absolute bounds and only used after training for evaluation
 sysid_absolute_bounds:
-  max_torque: [2.0, 5.0]
   frictionloss: [0.001, 1.0]
   damping: [0.001, 3.0]
   armature: [0.001, 0.2]

@@ -14,8 +14,8 @@ with open("./src/configs/sysid_config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 HPARAMS = config["hyperparameters"]
-DATA_PATH = config["dataset"]["processed_path"]
-CHKPT_PATH = config.get("model", {}).get("chkpt_path", "./models/best_sysid_model_sl.pth")
+DATA_PATH = config["dataset"]["processed_path"] if not config["dataset"]["include_rl_dataset"] else config["dataset"]["rl_processed_path"]
+CHKPT_PATH = config["model"]["chkpt_path"]
 
 # Pure In-Distribution (ID) Training Configuration [3]
 BATCH_SIZE = HPARAMS["batch_size"]
@@ -80,10 +80,20 @@ def train():
     
     # 2. Model Initialization
     model = CNNLSTMModel(config=HPARAMS, n_params=N_PARAMS, chkpt_file_pth=CHKPT_PATH, device=DEVICE)
+    if config["dataset"]["include_rl_dataset"]:
+        print("  --> Fine-tuning on RL Dataset")
+        model.load_model()
+        model.chkpt_file_pth = config["model"]["rl_chkpt_path"]  # Ensure future saves go to the RL-specific checkpoint path
     print("  --> Initialized Standard Supervised Learning Model")
         
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        model.optimizer, 'min', patience=10, factor=0.5
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #     model.optimizer, 'min', patience=10, factor=0.5
+    # )
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     model.optimizer, T_max=EPOCHS, eta_min=1e-6
+    # )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        model.optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
     
     best_val_mse = float('inf')
@@ -150,7 +160,9 @@ def train():
         avg_val_mse = val_mse / len(val_loader.dataset)
         
         # 1. Update Learning Rate based on validation accuracy
-        scheduler.step(avg_val_mse)
+        # scheduler.step(avg_val_mse)
+        # scheduler.step()
+        scheduler.step(epoch)
 
         # 2. Log Metrics to WandB
         wandb.log({
