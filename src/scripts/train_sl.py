@@ -28,7 +28,7 @@ N_PARAMS = len(config["sysid_bounds"].keys())
 # --- DATASET CLASS ---
 class SysIDSupervisedDataset(Dataset):
     def __init__(self, states, actions, targets):
-        # Convert shapes from (N, T, C) -> (N, C, T) for PyTorch Conv1D layers [3]
+        # Convert shapes from (N, T, C) -> (N, C, T) for PyTorch Conv1D layers
         self.states = torch.tensor(states, dtype=torch.float32).permute(0, 2, 1)
         self.actions = torch.tensor(actions, dtype=torch.float32).permute(0, 2, 1)
         self.targets = torch.tensor(targets, dtype=torch.float32)
@@ -54,7 +54,7 @@ def train():
     print(f"Device: {DEVICE}")
     print(f"Running Pure ID Training -> Batch Size: {BATCH_SIZE}")
     
-    # Load processed partitions (Y_train represents 100% of the training bounds dataset) [3]
+    # Load processed partitions (Y_train represents 100% of the training bounds dataset)
     data = np.load(DATA_PATH)
     
     states_train     = data['states_train']
@@ -64,7 +64,7 @@ def train():
     targets_train    = data['Y_train']
     targets_val      = data['Y_val']
 
-    # Unified loader utilizing the full batch size for ID training [3]
+    # Unified loader utilizing the full batch size for ID training
     train_id_loader = DataLoader(
         SysIDSupervisedDataset(states_train, actions_train, targets_train), 
         batch_size=BATCH_SIZE, 
@@ -85,13 +85,7 @@ def train():
         model.load_model()
         model.chkpt_file_pth = config["model"]["rl_chkpt_path"]  # Ensure future saves go to the RL-specific checkpoint path
     print("  --> Initialized Standard Supervised Learning Model")
-        
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    #     model.optimizer, 'min', patience=10, factor=0.5
-    # )
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    #     model.optimizer, T_max=EPOCHS, eta_min=1e-6
-    # )
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         model.optimizer, T_0=10, T_mult=2, eta_min=1e-6
     )
@@ -146,23 +140,24 @@ def train():
                 batch_states = batch_states.to(DEVICE)
                 batch_actions = batch_actions.to(DEVICE)
                 batch_targets = batch_targets.to(DEVICE)
-
+                
                 mu, sigma = model.forward(batch_states, batch_actions)
-                v_loss = model.nll_loss(mu, batch_targets, sigma.pow(2))
+
+                # Harmonize with the training head using native LogNormal distribution
+                dist = torch.distributions.LogNormal(loc=mu, scale=sigma)
+                safe_targets = torch.clamp(batch_targets, min=1e-8)
+                v_loss = -dist.log_prob(safe_targets).mean()
                 
                 val_loss += v_loss.item() * B
                 
-                # Mean Squared Error on parameters [3]
-                mse = F.mse_loss(mu, batch_targets)
+                # Calculate validation MSE in the target log-space [-1, 1] for accuracy tracking
+                mse = F.file_loss = F.mse_loss(mu, torch.log(safe_targets))
                 val_mse += mse.item() * B
         
         avg_val_loss = val_loss / len(val_loader.dataset)
         avg_val_mse = val_mse / len(val_loader.dataset)
         
-        # 1. Update Learning Rate based on validation accuracy
-        # scheduler.step(avg_val_mse)
-        # scheduler.step()
-        scheduler.step(epoch)
+        scheduler.step()
 
         # 2. Log Metrics to WandB
         wandb.log({

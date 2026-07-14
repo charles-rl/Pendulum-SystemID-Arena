@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import LogNormal
 
 
 class BaseModel(nn.Module):
@@ -8,7 +9,6 @@ class BaseModel(nn.Module):
         super(BaseModel, self).__init__()
 
         self.chkpt_file_pth = chkpt_file_pth
-        self.nll_loss = nn.GaussianNLLLoss(full=False)
 
         self.device = device
 
@@ -22,8 +22,16 @@ class BaseModel(nn.Module):
         
         # First we use normal in-distribution data to learn the target loss
         mu, sigma = self.forward(states, actions)
-        # if sigma then square here else if var then do not square
-        loss = self.nll_loss(mu, target, sigma.pow(2))
+        
+        # Clamp target to ensure strict positivity, as LogNormal support is x > 0
+        safe_target = torch.clamp(target, min=1e-8)
+        
+        # Instantiate the LogNormal distribution
+        # loc is the mean of the underlying normal distribution (your mu)
+        # scale is the standard deviation of the underlying normal distribution (your sigma)
+        dist = LogNormal(loc=mu, scale=sigma)
+        
+        loss = -dist.log_prob(safe_target).mean()
         
         self.optimizer.zero_grad()
         loss.backward()

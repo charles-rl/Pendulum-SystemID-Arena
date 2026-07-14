@@ -1,4 +1,5 @@
 from src.envs.pendulum import SinglePendulumEnv
+from src.envs.wrappers import *
 from src.sysid.randompolicy import WarmUpActionPolicy
 import numpy as np
 from multiprocessing import Pool, cpu_count
@@ -19,17 +20,26 @@ SIGNAL_TO_VARIATION_IDX = {
     "chirp_shifted": 6      # Maps to 6, 7, 8, or 9 inside reset()
 }
 
+with open("./src/configs/sysid_config.yaml", "r") as f:
+        config = yaml.safe_load(f)
+
 def collect_one_episode(args):
     episode_idx, params_dict, params_flat, variation_idx = args
     # Create env inside the worker (MuJoCo objects aren't picklable)
     # Command shouldn't be part of the SysID
     env = SinglePendulumEnv(render_mode=None, track_targets=False)
+    env = RealismWrapper(
+        env,
+        encoder_resolution=config["dataset"]["encoder_resolution"],
+        noise_ticks=config["dataset"]["noise_ticks"]
+    )
+    # NOTE: No scaling here because the dataset preprocessing will handle the scalers
     
     policy = WarmUpActionPolicy(
         action_space=env.action_space, 
-        total_timesteps=env.MAX_EPISODE_STEPS, 
-        dt=env.model.opt.timestep, 
-        frame_skip=env.FRAME_SKIP
+        total_timesteps=SinglePendulumEnv.MAX_EPISODE_STEPS, 
+        dt=env.unwrapped.model.opt.timestep, 
+        frame_skip=SinglePendulumEnv.FRAME_SKIP
     )
     
     # Pass the pre-calculated Sobol parameters directly into the environment
@@ -38,32 +48,30 @@ def collect_one_episode(args):
     # Reset using the specific variation index resolved dynamically from the config list
     policy.reset(variation_idx=variation_idx, seed=episode_idx)
     
-    trajectory_obs = np.zeros((env.MAX_EPISODE_STEPS, env.observation_space.shape[0]))
-    trajectory_acts = np.zeros((env.MAX_EPISODE_STEPS, env.action_space.shape[0]))
+    trajectory_obs = np.zeros((SinglePendulumEnv.MAX_EPISODE_STEPS, env.observation_space.shape[0]))
+    trajectory_acts = np.zeros((SinglePendulumEnv.MAX_EPISODE_STEPS, env.action_space.shape[0]))
     
     done = False
+    timesteps = 0
     while not done:
         # Control logic
-        current_timestep = env.timesteps
-        action = policy.act(current_timestep)
+        action = policy.act(timesteps)
         
         # Record everything at the CURRENT timestep
-        trajectory_obs[current_timestep] = obs
-        trajectory_acts[current_timestep] = action
+        trajectory_obs[timesteps] = obs
+        trajectory_acts[timesteps] = action
         
         # Step the environment
         obs_, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         obs = obs_
+        timesteps += 1
     
     env.close()
     return trajectory_obs, trajectory_acts, params_flat, variation_idx
 
 
 if __name__ == "__main__":
-    with open("./src/configs/sysid_config.yaml", "r") as f:
-        config = yaml.safe_load(f)
-        
     # 1. Ensure the directory exists
     os.makedirs(os.path.dirname(config["dataset"]["raw_path"]), exist_ok=True)
     

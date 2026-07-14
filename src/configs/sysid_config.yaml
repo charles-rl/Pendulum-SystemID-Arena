@@ -18,7 +18,7 @@ hyperparameters:
   weight_decay: 0.0
   clip_value: 5.0
   batch_size: 512
-  epochs: 1000
+  epochs: 1300  # Optimal epochs?
   min_steps: 50
 
 dataset:
@@ -30,7 +30,6 @@ dataset:
 
   # You must run collection twice one for training and one for OOD
   # --- For training ---
-  # desired_total_timesteps: 5000000
   desired_total_timesteps: 20000000  # Can change when it doesn't follow power of 2
   chosen_bounds: "sysid_bounds" # options are "sysid_bounds" or "sysid_absolute_bounds"
   raw_path: "./dataset/raw_pendulum_sysid_dataset.npz"
@@ -41,14 +40,15 @@ dataset:
 
   # For preprocessing with RL collected data
   # DEFAULT IS FALSE
-  include_rl_dataset: True  # Overrides the scalers path above if True
-  use_sl_with_rl_model: True  # If True, uses the SL model trained with RL data for the RL explorer
+  include_rl_dataset: False  # Overrides the scalers path above if True
+  use_sl_with_rl_model: False  # If True, uses the SL model trained with RL data for the RL explorer
   rl_raw_processed_path: "./dataset/raw_processed_rl_pendulum_dataset.npz"
   rl_scalers_path: "./models/rl_scalers.pkl"
   rl_processed_path: "./dataset/processed_rl_pendulum_dataset.npz"
 
   # For preprocessing and viewing the dataset
   encoder_resolution: 4096.0 # 12-bit encoder
+  noise_ticks: 3  # Number of ticks to add noise to the encoder reading
   figures_path: "./dataset/figures"
   scalers_path: "./models/scalers.pkl"
   processed_path: "./dataset/processed_pendulum_sysid_dataset.npz"
@@ -81,4 +81,4 @@ sysid_absolute_bounds:
   damping: [0.001, 3.0]
   armature: [0.001, 0.2]
   backlash_armature: [0.0001, 0.2]
-  backlash_damping: [0.0, 2.0]
+  backlash_damping: [0.0001, 2.0]

@@ -21,33 +21,20 @@ SCALER_PATH = config["dataset"]["scalers_path"] if not config["dataset"]["includ
 ENCODER_RESOLUTION = config["dataset"]["encoder_resolution"]
 
 
-def preprocess_raw_data(X_states_raw, ENCODER_RESOLUTION, DT):
-    """
-    Modular preprocessing helper expanded to support unscaled motor torque channels.
-    Assumes X_states_raw has shape (N, T, 3) where index 2 is motor torque.
-    """
+def preprocess_raw_data(X_states_raw):
     N, timesteps, _ = X_states_raw.shape
     
-    # 1. Apply 12-bit encoder quantization and operational tick jitter to angle
-    theta_noisy = np.round(X_states_raw[:, :, 0] * (ENCODER_RESOLUTION / (2 * np.pi)))
-    noise_ticks = 3
-    theta_noisy += np.round(np.random.normal(0, noise_ticks, theta_noisy.shape))
-    theta_noisy = theta_noisy * ((2 * np.pi) / ENCODER_RESOLUTION)
-    
-    # Apply velocity noise derived from position jitter
-    sigma_omega = (noise_ticks * 2 * np.pi) / (ENCODER_RESOLUTION * DT)
-    omega_noisy = X_states_raw[:, :, 1] + np.random.normal(0, sigma_omega, X_states_raw[:, :, 1].shape)
-    
-    # Extract clean torque signal directly from channel index 2
+    theta = X_states_raw[:, :, 0]
+    omega = X_states_raw[:, :, 1]
     torque = X_states_raw[:, :, 2]
 
-    # 2. Re-map trigonometric configurations across 5 channels
+    # Re-map trigonometric configurations across 5 channels
     X_engineered = np.zeros((N, timesteps, 5))
-    X_engineered[:, :, 0] = theta_noisy              # theta
-    X_engineered[:, :, 1] = omega_noisy              # omega
-    X_engineered[:, :, 2] = torque                   # ADDED: torque
-    X_engineered[:, :, 3] = np.cos(theta_noisy)      # cos(theta)
-    X_engineered[:, :, 4] = np.sin(theta_noisy)      # sin(theta)
+    X_engineered[:, :, 0] = theta              # theta
+    X_engineered[:, :, 1] = omega              # omega
+    X_engineered[:, :, 2] = torque             # torque
+    X_engineered[:, :, 3] = np.cos(theta)      # cos(theta)
+    X_engineered[:, :, 4] = np.sin(theta)      # sin(theta)
     
     return X_engineered
 
@@ -63,9 +50,9 @@ def main():
     # =========================================================
     print(f"Loading primary training raw dataset: {RAW_TRAIN_PATH}")
     train_data = np.load(RAW_TRAIN_PATH)
-    X_train_raw = train_data['trajectories']  # Shape: (N, T, 2)
-    actions_train_raw = train_data['actions']  # Shape: (N, T, 1)
-    Y_train_raw = train_data['parameters']    # Shape: (N, 6)
+    X_train_raw = train_data['trajectories']  # Shape: (N, T, Obs_Dim) -> [theta, omega, torque]
+    actions_train_raw = train_data['actions']  # Shape: (N, T, Action_Dim)
+    Y_train_raw = train_data['parameters']    # Shape: (N, N_Params)
     
     num_actions = actions_train_raw.shape[2]
     
@@ -78,15 +65,15 @@ def main():
     else:
         raise FileNotFoundError(
             f"Absolute bounds dataset not found at {RAW_ABS_PATH}. "
-            "Please generate this file to secure your True OOD evaluation set [3]."
+            "Please generate this file to secure your True OOD evaluation set."
         )
 
     # =========================================================
     # 2. RUN MODULAR FEATURE EXTRACTION
     # =========================================================
-    print("Applying encoder noise and extracting Sin/Cos features...")
-    X_train_eng = preprocess_raw_data(X_train_raw, ENCODER_RESOLUTION, DT)
-    X_abs_eng = preprocess_raw_data(X_abs_raw, ENCODER_RESOLUTION, DT)
+    print("Appending Sin/Cos features...")
+    X_train_eng = preprocess_raw_data(X_train_raw)
+    X_abs_eng = preprocess_raw_data(X_abs_raw)
 
     # =========================================================
     # 3. SPLITTING LOGIC (ID and True OOD only)
@@ -94,7 +81,7 @@ def main():
     print("Processing split boundaries...")
     sysid_bounds = config["sysid_bounds"]
     
-    # A. 100% of the training dataset is processed as In-Distribution (ID) [3]
+    # A. 100% of the training dataset is processed as In-Distribution (ID)
     X_in = X_train_eng
     actions_in = actions_train_raw
     Y_in = Y_train_raw
@@ -110,12 +97,7 @@ def main():
             Y_rl = rl_data['parameters']        # Shape: (N, Param_Dim)
             
             # Perform channel expansion (3 -> 5) WITHOUT adding extra quantization noise or tick jitter
-            X_rl_eng = np.zeros((X_rl_raw.shape[0], X_rl_raw.shape[1], 5))
-            X_rl_eng[:, :, 0] = X_rl_raw[:, :, 0]             # theta (already noisy from wrapper)
-            X_rl_eng[:, :, 1] = X_rl_raw[:, :, 1]             # omega (already noisy from wrapper)
-            X_rl_eng[:, :, 2] = X_rl_raw[:, :, 2]             # torque
-            X_rl_eng[:, :, 3] = np.cos(X_rl_raw[:, :, 0])     # cos(theta)
-            X_rl_eng[:, :, 4] = np.sin(X_rl_raw[:, :, 0])     # sin(theta)
+            X_rl_eng = preprocess_raw_data(X_rl_raw)
             
             # Concatenate right into the In-Distribution matrix space before the data splitting pass
             X_in = np.concatenate([X_in, X_rl_eng], axis=0)
@@ -181,13 +163,14 @@ def main():
     abs_max = [sysid_bounds[k][1] for k in sysid_bounds.keys()]
     y_limits = np.array([abs_min, abs_max])
 
-    y_scaler = MinMaxScaler(feature_range=(-1, 1))
+    # Scale targets to [e^-1, e^1] so ln(Y) yields a perfectly stable [-1, 1] variance for ID data
+    y_scaler = MinMaxScaler(feature_range=(np.exp(-1), np.exp(1)))
     y_scaler.fit(y_limits) 
 
     Y_train_scaled = y_scaler.transform(Y_train)
     Y_val_scaled = y_scaler.transform(Y_val)
     Y_test_scaled = y_scaler.transform(Y_test)
-    Y_true_ood_scaled = y_scaler.transform(Y_true_ood)  # Scales beyond [-1.0, 1.0] [3]
+    Y_true_ood_scaled = y_scaler.transform(Y_true_ood)  # Scales beyond [1e-3, 1.0]
 
     # =========================================================
     # 5. SAVE PROCESSED DATA AND SCALERS

@@ -59,7 +59,6 @@ class SinglePendulumEnv(gymnasium.Env):
         # If options are provided then update parameters otherwise use default
         if options is not None:
             p = options["params"]
-            # TODO: Need a way to return to default if system parameter was passed
             self.model.actuator_gainprm[self.actuator_id, 0] = p["kp"]
             self.model.actuator_biasprm[self.actuator_id, 1] = -p["kp"]
             self.model.actuator_biasprm[self.actuator_id, 2] = -p["kv"]
@@ -112,19 +111,13 @@ class SinglePendulumEnv(gymnasium.Env):
         }
         
         info = {"pole_angle": pole_angle, "pole_velocity": pole_velocity, "parameters": current_parameters}
-        # Scale angle to be between -1 and 1
-        scaled_pole_angle = (pole_angle + np.pi) / (2 * np.pi) * 2 - 1
-        # Scale velocity according to 45 RPM max speed of the motor (converted to rad/s)
-        max_velocity = (45 / 60) * 2 * np.pi # Convert 45 RPM to rad/s
-        scaled_pole_velocity = pole_velocity / max_velocity
-        # NOTE: In reality, the torque is pretty accurate, the torque constant just needs some noise
-        scaled_motor_torque = motor_torque / current_parameters["max_torque"]
+        # NOTE: Removed scaling and it will be handled by another wrapper instead
+        # TODO: The torque should lessen with more speed, follow the graph of the motor torque curve
         if self.track_targets:
-            # Scale target angle as well
-            scaled_target_angle = (self.target_angle + np.pi) / (2 * np.pi) * 2 - 1
-            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_motor_torque, scaled_target_angle], dtype=np.float64)
+            # NOTE: In reality, the torque is pretty accurate, the torque constant just needs some noise
+            obs = np.array([pole_angle, pole_velocity, motor_torque, self.target_angle], dtype=np.float64)
         else:
-            obs = np.array([scaled_pole_angle, scaled_pole_velocity, scaled_motor_torque], dtype=np.float64)
+            obs = np.array([pole_angle, pole_velocity, motor_torque], dtype=np.float64)
 
         return obs, info
     

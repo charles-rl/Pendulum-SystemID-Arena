@@ -60,14 +60,21 @@ class CNNLSTMModel(BaseModel):
         
         self.cnn_states = CNNModel(in_channels=state_dims, cnn_dims=cnn1_dims).to(self.device)
         self.cnn_actions = CNNModel(in_channels=action_dims, cnn_dims=cnn1_dims).to(self.device)
+        # self.cnn_states_actions = CNNModel(in_channels=state_dims + action_dims, cnn_dims=cnn1_dims).to(self.device)
+        # self.cnn_states_actions = CNNModel(in_channels=cnn1_dims * 2, cnn_dims=cnn1_dims).to(self.device)
+        # self.cnn_states_actions_bn = nn.BatchNorm1d(cnn1_dims).to(self.device)
         
         # Concatenating the outputs of the 4 CNNs so cnn1_dims * 4
         # And we have states and actions so we multiply by 2
         # We use kernel_size=1 because we don't want to mix information across the time dimension yet
-        self.mixer_cnn = nn.Conv1d(
-            in_channels=cnn1_dims * 4 * 2, out_channels=cnn2_dims, kernel_size=1, padding="same"
-        )
-        self.mixer_bn = nn.BatchNorm1d(cnn2_dims)
+        # self.mixer_cnn = nn.Conv1d(
+        #     in_channels=cnn1_dims * 4 * 2, out_channels=cnn2_dims, kernel_size=1, padding="same"
+        # )
+        # self.mixer_cnn = nn.Conv1d(
+        #     in_channels=cnn1_dims * 4, out_channels=cnn2_dims, kernel_size=1, padding="same"
+        # )
+        # self.mixer_bn = nn.BatchNorm1d(cnn2_dims)
+        self.mixer_cnn = CNNModel(in_channels=cnn1_dims * 4 * 2, cnn_dims=cnn2_dims // 4).to(self.device)
         
         # Removed average pooling layer
         
@@ -97,11 +104,13 @@ class CNNLSTMModel(BaseModel):
     def forward(self, states, actions):
         states_y = self.cnn_states(states)
         actions_y = self.cnn_actions(actions)
+        # states_actions = torch.cat([states, actions], dim=1)
+        # y = self.cnn_states_actions(states_actions)
         
         # We want it to be dim=1 because the shape becomes (batch_size, cnn1_dims * 3, timesteps)
         # if dim=-1 then shape becomes (batch_size, cnn1_dims, timesteps * 3)
         y = torch.cat([states_y, actions_y], dim=1)
-        y = self.mixer_bn(F.mish(self.mixer_cnn(y)))
+        y = self.mixer_cnn(y)
         
         # swap in_channels and sequence_length
         y = y.permute(0, 2, 1)
@@ -118,7 +127,8 @@ class CNNLSTMModel(BaseModel):
         y = self.ln_fc1(F.mish(self.fc1(latent)))
         y = self.ln_fc2(F.mish(self.fc2(y)))
         
-        mu = torch.tanh(self.mu_fc(y)) * 1.2  # Scale the tanh to allow for OOD predictions
+        # Use linear activations for the new Log-Normal NLL Loss
+        mu = self.mu_fc(y)
         sigma = torch.exp(self.sigma_fc(y)) + 1e-6  # epsilon added to help with the stability when the sigma is near 0
         # sigma = standard deviation
         # sigma^2 = variance = var

@@ -13,29 +13,84 @@ from src.envs.pendulum import SinglePendulumEnv
 from src.envs.wrappers import *
 from src.sysid.cnnlstm import CNNLSTMModel
 
-def make_env(config, sysid_config, sysid_model):
+def create_env(config, sysid_config, sysid_model, power_of_two_samples, evaluate=False):
+    env = SinglePendulumEnv(render_mode=None, track_targets=False)
+    env = DomainRandomizationWrapper(
+        env,
+        seed=config["seed"],
+        power_of_two_samples=power_of_two_samples,
+        dr_bounds=config["dr_bounds"],
+        nominal_params=config["nominal_params"]  # Pass nominal params from the yaml config
+    )
+    env = RealismWrapper(
+        env,
+        encoder_resolution=sysid_config["dataset"]["encoder_resolution"],
+        noise_ticks=sysid_config["dataset"]["noise_ticks"],
+    )
+    env = SysIDWrapper(
+        env,
+        sysid_model=sysid_model,
+        n_params=config["n_params"],
+        param_keys=list(sysid_config["sysid_bounds"].keys()),  # Pass the parameter keys for consistent ordering
+        scaler_path=config["scaler_path"],
+        evaluate=evaluate
+    )
+    env = ScalingWrapper(env)
+    return env
+
+def make_env(config, sysid_config, sysid_model, power_of_two_samples, evaluate):
     def thunk():
-        env = SinglePendulumEnv(render_mode=None, track_targets=False)
-        env = DomainRandomizationWrapper(
-            env,
-            seed=config["seed"],
-            power_of_two_samples=config["power_of_two_samples"],
-            dr_bounds=config["dr_bounds"],
-            nominal_params=config["nominal_params"]  # Pass nominal params from the yaml config
-        )
-        env = RealismWrapper(
-            env,
-            encoder_resolution=config["realism"]["encoder_resolution"],
-        )
-        env = SysIDWrapper(
-            env,
-            sysid_model=sysid_model,
-            n_params=config["n_params"],
-            param_keys=list(sysid_config["sysid_bounds"].keys()),  # Pass the parameter keys for consistent ordering
-            scaler_path=config["scaler_path"],
-        )
+        env = create_env(config, sysid_config, sysid_model, power_of_two_samples=power_of_two_samples, evaluate=evaluate)
         return env
     return thunk
+
+def do_eval_episode(env, agent, config):
+    num_envs = config["env"]["num_envs"]
+    
+    # Save active training history context to prevent cross-contamination
+    saved_actor_history = agent.buffer.actor_history.clone()
+    saved_critic_history = agent.buffer.critic_history.clone()
+
+    # Reset with the fixed config seed to guarantee identical Sobol parameter evaluation across iterations
+    obs, info = env.reset(seed=config["seed"])
+    obs_t = torch.Tensor(obs).to(agent.device)
+    priv_obs_t = torch.tensor(info["priv_obs"], dtype=torch.float32).to(agent.device)
+    
+    # Initialize clean history matching the exact expected training batch dimension
+    agent.init_history(obs_t, priv_obs_t)
+    
+    episodic_returns = np.zeros(num_envs)
+    episodic_lengths = np.zeros(num_envs)
+    env_done = np.zeros(num_envs, dtype=bool)
+
+    while not np.all(env_done):
+        curr_history_obs = agent.buffer.actor_history.clone()
+
+        with torch.no_grad():
+            action = agent.select_action(obs_t, curr_history_obs, evaluate=True)
+
+        next_obs, reward, terminations, truncations, info = env.step(action.cpu().numpy())
+        
+        # Track metrics only for environments that haven't finished their first episode yet
+        for i in range(num_envs):
+            if not env_done[i]:
+                episodic_returns[i] += reward[i]
+                episodic_lengths[i] += 1
+                if terminations[i] or truncations[i]:
+                    env_done[i] = True
+
+        obs_t = torch.Tensor(next_obs).to(agent.device)
+        priv_obs_t = torch.tensor(info["priv_obs"], dtype=torch.float32).to(agent.device)
+        done_t = torch.Tensor(np.logical_or(terminations, truncations)).to(device=agent.device)
+        
+        # Advance evaluation history frame tracking
+        agent.update_history(obs_t, priv_obs_t, done_t)
+
+    # Restore the training sequence history safely back to the agent's buffer
+    agent.buffer.actor_history = saved_actor_history
+    agent.buffer.critic_history = saved_critic_history
+
+    return np.mean(episodic_returns), np.mean(episodic_lengths)
 
 def main():
     with open("./src/configs/final_rl_config.yaml", "r") as f:
@@ -74,7 +129,10 @@ def main():
     sysid_model.load_model()
     sysid_model.eval()
     envs = gym.vector.SyncVectorEnv(
-        [make_env(config, sysid_config, sysid_model) for i in range(config["env"]["num_envs"])]
+        [make_env(config, sysid_config, sysid_model, power_of_two_samples=config["power_of_two_samples"], evaluate=False) for i in range(config["env"]["num_envs"])]
+    )
+    eval_env = gym.vector.SyncVectorEnv(
+        [make_env(config, sysid_config, sysid_model, power_of_two_samples=config["power_of_two_samples"], evaluate=True) for i in range(config["env"]["num_envs"])]
     )
     
     obs_dims = np.array(envs.single_observation_space.shape).prod()
@@ -102,7 +160,7 @@ def main():
     
     # Initial states
     global_step = 0
-    best_avg_return = -float("inf") # Add this line to track performance
+    best_eval_reward = -float("inf") # Add this line to track performance
     start_time = time.time()
     next_obs, info = envs.reset(seed=config["seed"])
     next_obs = torch.Tensor(next_obs).to(device)
@@ -177,18 +235,24 @@ def main():
         writer.add_scalar("charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step)
         for key, val in metrics.items():
             writer.add_scalar(f"losses/{key}", val, global_step)
+            
+        # Do evaluation
+        avg_eval_return, avg_eval_length = do_eval_episode(eval_env, agent, config)
+        
+        writer.add_scalar("eval/episodic_return", avg_eval_return, global_step)
+        writer.add_scalar("eval/episodic_length", avg_eval_length, global_step)
+        
+        # Update best_eval_reward and save model if improved
+        if avg_eval_return > best_eval_reward:
+            best_eval_reward = avg_eval_return
+            checkpoint_path = "./models/best_rl_explorer.pth"
+            agent.save_model(checkpoint_path)
+            print(f"--> Saved new best explorer model (Eval Return: {avg_eval_return:.2f}) to {checkpoint_path}")
 
         sps = int(global_step / (time.time() - start_time))
         if len(completed_returns) > 0:
             avg_return = np.mean(completed_returns)
             print(f"Iter {iteration}/{num_iterations} | Step: {global_step} | Avg Return: {avg_return:.2f} | SPS: {sps}")
-            
-            # Save checkpoint if average return improves
-            if avg_return > best_avg_return:
-                best_avg_return = avg_return
-                checkpoint_path = "./models/best_rl_explorer.pth"
-                agent.save_model(checkpoint_path)
-                print(f"--> Saved new best explorer model (Avg Return: {avg_return:.2f}) to {checkpoint_path}")
         else:
             print(f"Iter {iteration}/{num_iterations} | Step: {global_step} | SPS: {sps}")
         writer.add_scalar("charts/SPS", sps, global_step)

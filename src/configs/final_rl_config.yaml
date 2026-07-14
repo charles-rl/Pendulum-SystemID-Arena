@@ -24,18 +24,15 @@ dr_bounds:
   backlash_armature: [0.001, 0.1]
   backlash_damping: [0.001, 1.0]
 
-realism:
-  encoder_resolution: 4096.0 # 12-bit encoder
-
 wandb:
   project: "Pendulum-SystemID-Arena"
-  run_name: "InvertedDoublePendulum_Test"
+  run_name: "SysID-PPO-Explorer"
 
 env:
-  id: "InvertedDoublePendulum-v4"  # Perfect test environment: fast but challenging
   num_envs: 128  # Apparently optimal number of environments for MuJoCo(?)
+  # Must be 1024
   num_steps: 1024  # Apparently optimal number of steps to understand the 'cause and effect' of the environment(?)
-  total_timesteps: 3000000
+  total_timesteps: 5000000
 
 hyperparameters:
   learning_rate: 3.0e-4

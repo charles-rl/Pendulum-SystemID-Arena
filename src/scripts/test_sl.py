@@ -25,7 +25,6 @@ ENCODER_RESOLUTION = config["dataset"]["encoder_resolution"]
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 N_PARAMS = len(config["sysid_bounds"].keys())
 
-# Mapping index values back to clean display names [3]
 SIGNAL_NAMES = {
     0: "Noise",
     1: "PRBS",
@@ -43,175 +42,166 @@ SIGNAL_NAMES = {
 def get_signal_name(idx):
     return SIGNAL_NAMES.get(int(idx), f"RL/Unknown (ID: {idx})")
 
-def main():
-    print(f"Device: {DEVICE}")
+def plot_sparsification_curve(Y_test, mu_physical, sigma_physical, param_names, figures_path):
+    """
+    Plots the Error-Rejection (Sparsification) curve.
+    X-axis: % of highest-uncertainty predictions rejected.
+    Y-axis: Mean Absolute Error (MAE) of the remaining dataset.
+    """
+    n_params = len(param_names)
+    n_cols = 3
+    n_rows = int(np.ceil(n_params / n_cols))
     
-    # 1. Load fitted scalers [3]
-    with open(SCALER_PATH, 'rb') as f:
-        scalers = pickle.load(f)
-    x_scaler = scalers['x_scaler']
-    action_scaler = scalers['action_scaler']
-    y_scaler = scalers['y_scaler']
-
-    # 2. Load raw training data to reconstruct test split with signal types [3]
-    print("Loading raw training dataset...")
-    raw_data = np.load(RAW_TRAIN_PATH)
-    X_raw = raw_data['trajectories']
-    actions_raw = raw_data['actions']
-    Y_raw = raw_data['parameters']
-    signals_raw = raw_data['signal_types']
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4.2 * n_rows), squeeze=False)
+    fig.suptitle("Uncertainty Sparsification (Error-Rejection) Curves", fontsize=14, y=0.98)
     
-    # Compute environment step length
-    from src.envs.pendulum import SinglePendulumEnv
-    dummy_env = SinglePendulumEnv(render_mode=None)
-    DT = dummy_env.model.opt.timestep * dummy_env.FRAME_SKIP
-    dummy_env.close()
-
-    # Rerun trig feature mapping on raw data [3]
-    X_engineered = preprocess_raw_data(X_raw, ENCODER_RESOLUTION, DT)
-
-    # Reconstruct ID masks strictly matching preprocess.py [3]
-    # sysid_bounds = config["sysid_bounds"]
-    # param_names = list(sysid_bounds.keys())
+    # We evaluate dropping from 0% up to 95% of the data (can't drop 100% or MAE is undefined)
+    drop_fractions = np.linspace(0, 0.95, 50) 
     
-    # # Track physical bounds ranges for normalization
-    # param_ranges = np.array([sysid_bounds[k][1] - sysid_bounds[k][0] for k in param_names])
-    
-    # MARGIN = 0.02
-    # id_masks = []
-    # for i, param in enumerate(param_names):
-    #     p_min, p_max = sysid_bounds[param]
-    #     p_range = p_max - p_min
-    #     lower_bound = p_min + (MARGIN * p_range)
-    #     upper_bound = p_max - (MARGIN * p_range)
-    #     id_mask = (Y_raw[:, i] >= lower_bound) & (Y_raw[:, i] <= upper_bound)
-    #     id_masks.append(id_mask)
+    for i, p_name in enumerate(param_names):
+        row, col = i // n_cols, i % n_cols
+        ax = axes[row, col]
         
-    # is_id = np.all(np.stack(id_masks, axis=0), axis=0)
-
-    # # Filter down to ID pool
-    # X_in = X_engineered[is_id]
-    # actions_in = actions_raw[is_id]
-    # Y_in = Y_raw[is_id]
-    # signals_in = signals_raw[is_id]
-    
-    # Reconstruct ID masks strictly matching preprocess.py [3]
-    sysid_bounds = config["sysid_bounds"]
-    param_names = list(sysid_bounds.keys())
-    
-    # Track physical bounds ranges for normalization
-    param_ranges = np.array([sysid_bounds[k][1] - sysid_bounds[k][0] for k in param_names])
-
-    # DYNAMIC COLUMN ALIGNMENT: 
-    # It attempts to read 'raw_parameter_order' from your config. If it doesn't find it,
-    # it safely falls back to the original 6-parameter order to align indices [3].
-    RAW_PARAM_ORDER = config["dataset"].get(
-        "raw_parameter_order", 
-        ["frictionloss", "damping", "armature", "backlash_armature", "backlash_damping"]
-    )
-    active_indices = [RAW_PARAM_ORDER.index(name) for name in param_names]
-    
-    MARGIN = 0.02
-    id_masks = []
-    for idx, param in zip(active_indices, param_names):
-        p_min, p_max = sysid_bounds[param]
-        p_range = p_max - p_min
-        lower_bound = p_min + (MARGIN * p_range)
-        upper_bound = p_max - (MARGIN * p_range)
+        abs_err = np.abs(mu_physical[:, i] - Y_test[:, i])
+        sig = sigma_physical[:, i]
+        N = len(abs_err)
         
-        # Correctly index Y_raw dynamically based on the NPZ raw column order [3]
-        id_mask = (Y_raw[:, idx] >= lower_bound) & (Y_raw[:, idx] <= upper_bound)
-        id_masks.append(id_mask)
+        # Sort indices ascending: lowest sigma (most confident) first
+        sort_idx_sig = np.argsort(sig)
         
-    is_id = np.all(np.stack(id_masks, axis=0), axis=0)
-
-    # Filter down to ID pool and slice columns strictly to match your active config parameters [3]
-    X_in = X_engineered[is_id]
-    actions_in = actions_raw[is_id]
-    Y_in = Y_raw[is_id][:, active_indices]  # Slices Y to 5 active parameters in the correct order
-    signals_in = signals_raw[is_id]
-
-    # =========================================================================
-    # NEW: Inject Consolidated RL Explorer Trajectories into the ID evaluation pool
-    # =========================================================================
-    if config["dataset"]["include_rl_dataset"]:
-        rl_data_path = config["dataset"]["rl_raw_processed_path"]
-        if os.path.exists(rl_data_path):
-            print(f"Loading and appending RL dataset to matching split space: {rl_data_path}")
-            rl_data = np.load(rl_data_path)
-            X_rl_raw = rl_data['trajectories']
-            actions_rl = rl_data['actions']
-            Y_rl = rl_data['parameters']
+        # Oracle sort: lowest actual error first (perfect self-awareness)
+        sort_idx_err = np.argsort(abs_err)
+        
+        mae_by_sigma = []
+        mae_by_oracle = []
+        
+        for f in drop_fractions:
+            n_keep = max(1, int(N * (1 - f))) 
             
-            # SIMPLIFIED STEP: Completely ignore internal 0, 1, 2 indices and force index 10
-            signals_rl = np.full(X_rl_raw.shape[0], 10, dtype=np.int32)
+            # Keep only the most confident `n_keep` samples
+            kept_errs_by_sig = abs_err[sort_idx_sig[:n_keep]]
+            kept_errs_by_oracle = abs_err[sort_idx_err[:n_keep]]
             
-            # Map channel dimensions smoothly matching the wrapper's noise profiles
-            X_rl_eng = np.zeros((X_rl_raw.shape[0], X_rl_raw.shape[1], 5))
-            X_rl_eng[:, :, 0] = X_rl_raw[:, :, 0]
-            X_rl_eng[:, :, 1] = X_rl_raw[:, :, 1]
-            X_rl_eng[:, :, 2] = X_rl_raw[:, :, 2]
-            X_rl_eng[:, :, 3] = np.cos(X_rl_raw[:, :, 0])
-            X_rl_eng[:, :, 4] = np.sin(X_rl_raw[:, :, 0])
+            mae_by_sigma.append(np.mean(kept_errs_by_sig))
+            mae_by_oracle.append(np.mean(kept_errs_by_oracle))
             
-            # Concat into evaluation baseline space before train_test_split
-            X_in = np.concatenate([X_in, X_rl_eng], axis=0)
-            actions_in = np.concatenate([actions_in, actions_rl], axis=0)
-            Y_in = np.concatenate([Y_in, Y_rl], axis=0)
-            signals_in = np.concatenate([signals_in, signals_rl], axis=0)
-
-    # Reconstruct the exact test split (random_state=42) [3]
-    _, X_test, _, actions_test, _, Y_test, _, signals_test = train_test_split(
-        X_in, actions_in, Y_in, signals_in, test_size=0.1, random_state=42
-    )
-
-    print(f"Synchronized unseen ID Test Set size: {len(X_test)} episodes")
-
-    # 3. Apply ID Scalers strictly [3]
-    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 5)).reshape(X_test.shape)
-    actions_test_scaled = action_scaler.transform(actions_test.reshape(-1, num_actions := actions_test.shape[2])).reshape(actions_test.shape)
+        # Plot curves
+        ax.plot(drop_fractions * 100, mae_by_sigma, label="Model Uncertainty (σ)", color="blue", linewidth=2)
+        ax.plot(drop_fractions * 100, mae_by_oracle, label="Oracle (True Error)", color="black", linestyle="--", alpha=0.7)
+        
+        ax.set_title(p_name, fontsize=11)
+        ax.set_xlabel("% of Data Rejected (Highest σ)", fontsize=9)
+        ax.set_ylabel("MAE of Remaining Data", fontsize=9)
+        ax.grid(alpha=0.2)
+        if i == 0:
+            ax.legend(fontsize=9)
+            
+    # Clean up unused grid panels
+    for i in range(n_params, n_rows * n_cols):
+        row, col = i // n_cols, i % n_cols
+        axes[row, col].axis("off")
+        
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.92 - (0.02 * n_rows), hspace=0.35, wspace=0.3)
     
-    # 4. Load Model
-    model = CNNLSTMModel(config=HPARAMS, n_params=N_PARAMS, chkpt_file_pth=CHKPT_PATH, device=DEVICE)
-    model.load_model()
-    model.eval()
-    print("Model loaded successfully.")
+    output_path = os.path.join(figures_path, "sparsification_curves.png")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"Saved Sparsification Curves to: {output_path}")
 
-    # 5. Run Inference
-    # Batch processing to prevent GPU memory spikes
-    batch_size = 256
-    n_batches = int(np.ceil(len(X_test_scaled) / batch_size))
+
+def plot_dual_sparsification_curve(Y_test, mu_physical, sigma_physical, param_names, figures_path):
+    """
+    Plots a Dual-Sided Error-Rejection (Sparsification) curve with respective Oracles.
+    Splits the test data into Left (Low) and Right (High) halves based on the ground truth 
+    median to check if the uncertainty metric holds up equally across both sides of the data.
+    """
+    n_params = len(param_names)
+    n_cols = 3
+    n_rows = int(np.ceil(n_params / n_cols))
     
-    all_mu_scaled = []
-    all_sigma_scaled = []
-
-    with torch.no_grad():
-        for i in tqdm(range(n_batches), desc="Evaluating model"):
-            start_idx = i * batch_size
-            end_idx = min(start_idx + batch_size, len(X_test_scaled))
-            
-            # Format shape to channels-first (N, C, T) for Conv1D [3]
-            s_batch = torch.tensor(X_test_scaled[start_idx:end_idx], dtype=torch.float32).permute(0, 2, 1).to(DEVICE)
-            a_batch = torch.tensor(actions_test_scaled[start_idx:end_idx], dtype=torch.float32).permute(0, 2, 1).to(DEVICE)
-            
-            mu, sigma = model.forward(s_batch, a_batch)
-            all_mu_scaled.append(mu.cpu().numpy())
-            all_sigma_scaled.append(sigma.cpu().numpy())
-
-    mu_scaled = np.concatenate(all_mu_scaled, axis=0)
-    sigma_scaled = np.concatenate(all_sigma_scaled, axis=0)
-
-    # 6. Physical Inverse-Scaling Math [3]
-    # Predictions (mu) inverse-transform smoothly
-    mu_physical = y_scaler.inverse_transform(mu_scaled)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4.2 * n_rows), squeeze=False)
+    fig.suptitle("Dual-Sided Uncertainty Sparsification (Left vs. Right with Oracles)", fontsize=14, y=0.98)
     
-    # Standard deviations (sigma) scale linearly with the range of the MinMaxScaler:
-    # Since MinMaxScaler maps MinMax to [-1, 1], the scaling factor is range / 2 [3]
-    sigma_physical = sigma_scaled * (param_ranges / 2.0)
+    drop_fractions = np.linspace(0, 0.95, 50) 
+    
+    for i, p_name in enumerate(param_names):
+        row, col = i // n_cols, i % n_cols
+        ax = axes[row, col]
+        
+        abs_err = np.abs(mu_physical[:, i] - Y_test[:, i])
+        sig = sigma_physical[:, i]
+        gt = Y_test[:, i]
+        
+        # Split the data into Left (lower half) and Right (upper half) based on median ground truth
+        median_val = np.median(gt)
+        left_mask = gt <= median_val
+        right_mask = gt > median_val
+        
+        # Helper function to compute both Sigma and Oracle curves for a subset
+        def compute_subset_curves(mask):
+            sub_err = abs_err[mask]
+            sub_sig = sig[mask]
+            sub_N = len(sub_err)
+            
+            if sub_N == 0:
+                blank = [0.0] * len(drop_fractions)
+                return blank, blank
+                
+            # Sort by predicted uncertainty (sigma)
+            sort_idx_sig = np.argsort(sub_sig)
+            # Sort by true error (oracle)
+            sort_idx_err = np.argsort(sub_err)
+            
+            mae_sigma_line = []
+            mae_oracle_line = []
+            
+            for f in drop_fractions:
+                n_keep = max(1, int(sub_N * (1 - f)))
+                
+                mae_sigma_line.append(np.mean(sub_err[sort_idx_sig[:n_keep]]))
+                mae_oracle_line.append(np.mean(sub_err[sort_idx_err[:n_keep]]))
+                
+            return mae_sigma_line, mae_oracle_line
 
-    # =========================================================================
-    # 7. Goal 2: Global Evaluation (Fair Parameter Evaluation across all signal types) [3]
-    # =========================================================================
+        # Compute curves
+        left_sigma, left_oracle = compute_subset_curves(left_mask)
+        right_sigma, right_oracle = compute_subset_curves(right_mask)
+        
+        # Plot Model Curves (Solid Lines)
+        ax.plot(drop_fractions * 100, left_sigma, label="Left Half (Model σ)", color="teal", linewidth=2)
+        ax.plot(drop_fractions * 100, right_sigma, label="Right Half (Model σ)", color="darkorange", linewidth=2)
+        
+        # Plot Oracle Curves (Dashed Lines)
+        ax.plot(drop_fractions * 100, left_oracle, label="Left Oracle", color="teal", linestyle="--", alpha=0.6)
+        ax.plot(drop_fractions * 100, right_oracle, label="Right Oracle", color="darkorange", linestyle="--", alpha=0.6)
+        
+        ax.set_title(f"{p_name} (Median: {median_val:.3f})", fontsize=11)
+        ax.set_xlabel("% of Data Rejected (Highest σ)", fontsize=9)
+        ax.set_ylabel("MAE of Remaining Data", fontsize=9)
+        ax.grid(alpha=0.2)
+        
+        if i == 0:
+            ax.legend(fontsize=8, loc="upper right")
+            
+    for i in range(n_params, n_rows * n_cols):
+        row, col = i // n_cols, i % n_cols
+        axes[row, col].axis("off")
+        
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.92 - (0.02 * n_rows), hspace=0.35, wspace=0.3)
+    
+    output_path = os.path.join(figures_path, "sparsification_curves_left_right_oracle.png")
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    print(f"Saved Dual-Sided Sparsification Curves with Oracles to: {output_path}")
+
+
+# --- MODULAR METRICS & PLOTTING FUNCTION ---
+def compute_and_plot_metrics(Y_test, mu_physical, sigma_physical, param_names, param_ranges, sysid_bounds, signals_test):
+    """
+    Consolidated metric calculation and visualization engine.
+    Add any new evaluation metrics or custom charts directly inside this function.
+    """
+    # 1. Global Performance Printout
     print("\n" + "="*80)
     print("GLOBAL PHYSICAL PARAMETER PREDICTION ACCURACY")
     print("="*80)
@@ -224,16 +214,14 @@ def main():
         print(f"{p_name:<22} | {mae:<20.6f} | {r2:<18.4f} | {avg_sigma:<15.6f}")
     print("="*80)
 
-    # DYNAMIC GRID CALCULATION: Scales perfectly to any odd/even parameter count [3]
+    # 2. Scatter Plotting Engine
     n_params = len(param_names)
     n_cols = 3
     n_rows = int(np.ceil(n_params / n_cols))
     
-    # squeeze=False is critical to prevent axes indexing bugs if n_rows = 1 [3]
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 4.2 * n_rows), squeeze=False)
     fig.suptitle("Ground Truth vs. Predicted Parameters (Colored by Signal Type)", fontsize=14, y=0.98)
     
-    # Map index to legible signal name strings
     signals_named = np.array([SIGNAL_NAMES.get(idx, f"Other ({idx})") for idx in signals_test])
     unique_signals = np.unique(signals_named)
     
@@ -244,7 +232,6 @@ def main():
         row, col = i // n_cols, i % n_cols
         ax = axes[row, col]
         
-        # Plot points grouped by signal type to keep legend entries unique
         for s_type in unique_signals:
             mask = (signals_named == s_type)
             ax.scatter(
@@ -253,13 +240,11 @@ def main():
                 color=color_map[s_type], 
                 s=4.0, 
                 alpha=0.6, 
-                label=s_type if i == 0 else "" # Only add to legend on first plot
+                label=s_type if i == 0 else ""
             )
             
-        # Draw ideal y=x reference line
         p_min, p_max = sysid_bounds[p_name]
         ax.plot([p_min, p_max], [p_min, p_max], color="black", linestyle="--", alpha=0.5, linewidth=1.2)
-        
         ax.set_title(p_name, fontsize=11)
         ax.set_xlabel("Ground Truth", fontsize=9)
         ax.set_ylabel("Predicted Mean", fontsize=9)
@@ -267,46 +252,31 @@ def main():
         ax.set_xlim(p_min, p_max)
         ax.set_ylim(p_min, p_max)
 
-    # Dynamically turn off and hide any unused axes panels in the grid [3]
     for i in range(n_params, n_rows * n_cols):
         row, col = i // n_cols, i % n_cols
         axes[row, col].axis("off")
 
-    # Responsive spacing for suptitle and bottom legend [3]
     fig.tight_layout()
     fig.subplots_adjust(top=0.92 - (0.02 * n_rows), bottom=0.15 if n_rows > 1 else 0.24, hspace=0.35, wspace=0.3)
-    fig.legend(
-        loc="lower center", 
-        ncol=min(len(unique_signals), 5), 
-        bbox_to_anchor=(0.5, 0.01), 
-        fontsize=9
-    )
+    fig.legend(loc="lower center", ncol=min(len(unique_signals), 5), bbox_to_anchor=(0.5, 0.01), fontsize=9)
     
     output_scatter_path = os.path.join(FIGURES_PATH, "ground_truth_vs_predictions.png")
     fig.savefig(output_scatter_path, dpi=300, bbox_inches="tight")
     print(f"Saved Ground Truth vs. Prediction scatter plots to: {output_scatter_path}")
 
-    # 8. Goal 1: Signal-Type Contribution Analysis [3]
-    # We normalize error and sigma by parameter range to allow a clean, scale-invariant heatmap [3]
-    signal_mae_matrix = np.zeros((n_params := len(param_names), len(unique_signals)))
+    # 3. Signal Contribution & Heatmap Matrices
+    signal_mae_matrix = np.zeros((n_params, len(unique_signals)))
     signal_sigma_matrix = np.zeros((n_params, len(unique_signals)))
 
     for col_idx, s_type in enumerate(unique_signals):
         mask = (signals_named == s_type)
         for row_idx, p_name in enumerate(param_names):
-            # Compute MAE normalized by parameter's range (error as % of physical span) [3]
             raw_mae = np.mean(np.abs(mu_physical[mask, row_idx] - Y_test[mask, row_idx]))
-            normalized_mae = raw_mae / param_ranges[row_idx]
-            signal_mae_matrix[row_idx, col_idx] = normalized_mae * 100 # Convert to percentage
+            signal_mae_matrix[row_idx, col_idx] = (raw_mae / param_ranges[row_idx]) * 100 
             
-            # Compute Average uncertainty normalized by range (% of physical span) [3]
             raw_sigma = np.mean(sigma_physical[mask, row_idx])
-            normalized_sigma = raw_sigma / param_ranges[row_idx]
-            signal_sigma_matrix[row_idx, col_idx] = normalized_sigma * 100
+            signal_sigma_matrix[row_idx, col_idx] = (raw_sigma / param_ranges[row_idx]) * 100
 
-    # =========================================================================
-    # --- INSERT THIS PRINT BLOCK HERE TO PRINT COPY-PASTABLE TABLES ---
-    # =========================================================================
     print("\n" + "="*120)
     print("SIGNAL CONTRIBUTION: NORMALIZED MAE (% of Parameter Range) BY SIGNAL TYPE")
     print("="*120)
@@ -327,12 +297,9 @@ def main():
         row_str = f"{param_names[r]:<18} | " + " | ".join([f"{signal_sigma_matrix[r, c]:.2f}%".ljust(15) for c in range(len(unique_signals))])
         print(row_str)
     print("="*120)
-    # =========================================================================
     
-    # Plot double-panel Heatmap
     fig_heat, (ax_heat_mae, ax_heat_sig) = plt.subplots(1, 2, figsize=(15, 6))
     
-    # Heatmap A: Normalized MAE %
     im_mae = ax_heat_mae.imshow(signal_mae_matrix, cmap="YlOrRd", aspect="auto")
     ax_heat_mae.set_title("Normalized Mean Absolute Error (% of Parameter Range)", fontsize=12)
     ax_heat_mae.set_xticks(np.arange(len(unique_signals)))
@@ -341,13 +308,11 @@ def main():
     ax_heat_mae.set_yticklabels(param_names, fontsize=9)
     fig_heat.colorbar(im_mae, ax=ax_heat_mae, label="MAE (%)")
     
-    # Annotate cells with values
     for r in range(n_params):
         for c in range(len(unique_signals)):
             ax_heat_mae.text(c, r, f"{signal_mae_matrix[r, c]:.2f}%", ha="center", va="center", 
                              color="black" if signal_mae_matrix[r, c] < 8.0 else "white", fontsize=9)
 
-    # Heatmap B: Normalized predicted Uncertainty % [3]
     im_sig = ax_heat_sig.imshow(signal_sigma_matrix, cmap="Purples", aspect="auto")
     ax_heat_sig.set_title("Average Predicted Uncertainty (σ as % of Parameter Range)", fontsize=12)
     ax_heat_sig.set_xticks(np.arange(len(unique_signals)))
@@ -366,8 +331,157 @@ def main():
     fig_heat.savefig(output_heat_path, dpi=300, bbox_inches="tight")
     print(f"Saved Signal Contribution heatmaps to: {output_heat_path}")
     
+    # 4. Generate the Sparsification (Error-Rejection) Curves
+    plot_sparsification_curve(
+        Y_test=Y_test, 
+        mu_physical=mu_physical, 
+        sigma_physical=sigma_physical, 
+        param_names=param_names, 
+        figures_path=FIGURES_PATH
+    )
+    
+    # 5. Generate the Dual Sparsification (Error-Rejection) Curves
+    plot_dual_sparsification_curve(
+        Y_test=Y_test, 
+        mu_physical=mu_physical, 
+        sigma_physical=sigma_physical, 
+        param_names=param_names, 
+        figures_path=FIGURES_PATH
+    )
+
+
+# --- MAIN PIPELINE ---
+def main():
+    print(f"Device: {DEVICE}")
+    
+    with open(SCALER_PATH, 'rb') as f:
+        scalers = pickle.load(f)
+    x_scaler = scalers['x_scaler']
+    action_scaler = scalers['action_scaler']
+    y_scaler = scalers['y_scaler']
+
+    print("Loading raw training dataset...")
+    raw_data = np.load(RAW_TRAIN_PATH)
+    X_raw = raw_data['trajectories']
+    actions_raw = raw_data['actions']
+    Y_raw = raw_data['parameters']
+    signals_raw = raw_data['signal_types']
+    
+    from src.envs.pendulum import SinglePendulumEnv
+    dummy_env = SinglePendulumEnv(render_mode=None)
+    DT = dummy_env.model.opt.timestep * dummy_env.FRAME_SKIP
+    dummy_env.close()
+
+    X_engineered = preprocess_raw_data(X_raw)
+    
+    sysid_bounds = config["sysid_bounds"]
+    param_names = list(sysid_bounds.keys())
+    param_ranges = np.array([sysid_bounds[k][1] - sysid_bounds[k][0] for k in param_names])
+
+    RAW_PARAM_ORDER = config["dataset"].get(
+        "raw_parameter_order", 
+        ["frictionloss", "damping", "armature", "backlash_armature", "backlash_damping"]
+    )
+    active_indices = [RAW_PARAM_ORDER.index(name) for name in param_names]
+    
+    MARGIN = 0.02
+    id_masks = []
+    for idx, param in zip(active_indices, param_names):
+        p_min, p_max = sysid_bounds[param]
+        p_range = p_max - p_min
+        lower_bound = p_min + (MARGIN * p_range)
+        upper_bound = p_max - (MARGIN * p_range)
+        
+        id_mask = (Y_raw[:, idx] >= lower_bound) & (Y_raw[:, idx] <= upper_bound)
+        id_masks.append(id_mask)
+        
+    is_id = np.all(np.stack(id_masks, axis=0), axis=0)
+
+    X_in = X_engineered[is_id]
+    actions_in = actions_raw[is_id]
+    Y_in = Y_raw[is_id][:, active_indices]  
+    signals_in = signals_raw[is_id]
+
+    if config["dataset"]["include_rl_dataset"]:
+        rl_data_path = config["dataset"]["rl_raw_processed_path"]
+        if os.path.exists(rl_data_path):
+            print(f"Loading and appending RL dataset to matching split space: {rl_data_path}")
+            rl_data = np.load(rl_data_path)
+            X_rl_raw = rl_data['trajectories']
+            actions_rl = rl_data['actions']
+            Y_rl = rl_data['parameters']
+            
+            signals_rl = np.full(X_rl_raw.shape[0], 10, dtype=np.int32)
+            
+            X_rl_eng = preprocess_raw_data(X_rl_raw)
+            
+            X_in = np.concatenate([X_in, X_rl_eng], axis=0)
+            actions_in = np.concatenate([actions_in, actions_rl], axis=0)
+            Y_in = np.concatenate([Y_in, Y_rl], axis=0)
+            signals_in = np.concatenate([signals_in, signals_rl], axis=0)
+
+    _, X_test, _, actions_test, _, Y_test, _, signals_test = train_test_split(
+        X_in, actions_in, Y_in, signals_in, test_size=0.1, random_state=42
+    )
+
+    print(f"Synchronized unseen ID Test Set size: {len(X_test)} episodes")
+
+    X_test_scaled = x_scaler.transform(X_test.reshape(-1, 5)).reshape(X_test.shape)
+    num_actions = actions_test.shape[2]
+    actions_test_scaled = action_scaler.transform(actions_test.reshape(-1, num_actions)).reshape(actions_test.shape)
+    
+    model = CNNLSTMModel(config=HPARAMS, n_params=N_PARAMS, chkpt_file_pth=CHKPT_PATH, device=DEVICE)
+    model.load_model()
+    model.eval()
+    print("Model loaded successfully.")
+
+    batch_size = 256
+    n_batches = int(np.ceil(len(X_test_scaled) / batch_size))
+    
+    all_mu = []
+    all_sigma = []
+
+    with torch.no_grad():
+        for i in tqdm(range(n_batches), desc="Evaluating model"):
+            start_idx = i * batch_size
+            end_idx = min(start_idx + batch_size, len(X_test_scaled))
+            
+            s_batch = torch.tensor(X_test_scaled[start_idx:end_idx], dtype=torch.float32).permute(0, 2, 1).to(DEVICE)
+            a_batch = torch.tensor(actions_test_scaled[start_idx:end_idx], dtype=torch.float32).permute(0, 2, 1).to(DEVICE)
+            
+            mu, sigma = model.forward(s_batch, a_batch)
+            all_mu.append(mu.cpu().numpy())
+            all_sigma.append(sigma.cpu().numpy())
+
+    mu_log_space = np.concatenate(all_mu, axis=0)
+    sigma_log_space = np.concatenate(all_sigma, axis=0)
+
+    # --- CORRECT LOG-NORMAL PHYSICAL TRANSLATION MATH ---
+    # 1. Bring mu from log-space [-1, 1] back into the exponential scaled space [e^-1, e^1]
+    mu_scaled_domain = np.exp(mu_log_space)
+    mu_physical = y_scaler.inverse_transform(mu_scaled_domain)
+    
+    # 2. Extract standard deviation in the scaled domain using log-normal distribution variance tracking
+    sigma_scaled_domain = np.sqrt(
+        (np.exp(sigma_log_space**2) - 1.0) * np.exp(2.0 * mu_log_space + sigma_log_space**2)
+    )
+    
+    # 3. Apply standard deviation scaler translation factor based on the true spread of MinMaxScaler (e^1 - e^-1)
+    scaler_range_factor = np.exp(1) - np.exp(-1)
+    sigma_physical = sigma_scaled_domain * (param_ranges / scaler_range_factor)
+
+    # --- INVOKE MODULAR FUNCTION ---
+    compute_and_plot_metrics(
+        Y_test=Y_test,
+        mu_physical=mu_physical,
+        sigma_physical=sigma_physical,
+        param_names=param_names,
+        param_ranges=param_ranges,
+        sysid_bounds=sysid_bounds,
+        signals_test=signals_test
+    )
+    
     plt.show()
 
 if __name__ == "__main__":
     main()
-    
